@@ -3,12 +3,14 @@ import re
 import logging
 from typing import List, Dict, Set, Tuple, Optional
 import asyncio
+import xml.etree.ElementTree as ET
 
 import discord
 from discord.ext import commands
 from discord import app_commands
 from dotenv import load_dotenv
 from pyzotero import zotero
+import httpx
 
 # Setup logging
 logging.basicConfig(
@@ -144,17 +146,207 @@ def categorize_link(url: str) -> Tuple[str, Optional[str]]:
 
 
 # ============================================================================
+# Metadata Fetching Functions
+# ============================================================================
+
+async def fetch_crossref_metadata(doi: str) -> Optional[Dict]:
+    """Fetch metadata from CrossRef API for a given DOI."""
+    try:
+        url = f"https://api.crossref.org/works/{doi}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('message', {})
+            else:
+                logger.warning(f"CrossRef API returned status {response.status_code} for DOI: {doi}")
+                return None
+    except Exception as e:
+        logger.error(f"Error fetching CrossRef metadata for {doi}: {e}")
+        return None
+
+
+async def fetch_arxiv_metadata(arxiv_id: str) -> Optional[Dict]:
+    """Fetch metadata from arXiv API for a given arXiv ID."""
+    try:
+        # Remove version suffix if present
+        base_id = arxiv_id.split('v')[0]
+        url = f"http://export.arxiv.org/api/query?id_list={base_id}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                # Parse XML response
+                root = ET.fromstring(response.content)
+                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                entry = root.find('atom:entry', ns)
+                
+                if entry is not None:
+                    metadata = {}
+                    
+                    # Title
+                    title_elem = entry.find('atom:title', ns)
+                    if title_elem is not None:
+                        metadata['title'] = title_elem.text.strip()
+                    
+                    # Authors
+                    authors = []
+                    for author in entry.findall('atom:author', ns):
+                        name_elem = author.find('atom:name', ns)
+                        if name_elem is not None:
+                            authors.append(name_elem.text.strip())
+                    metadata['authors'] = authors
+                    
+                    # Abstract
+                    summary_elem = entry.find('atom:summary', ns)
+                    if summary_elem is not None:
+                        metadata['abstract'] = summary_elem.text.strip()
+                    
+                    # Published date
+                    published_elem = entry.find('atom:published', ns)
+                    if published_elem is not None:
+                        metadata['published'] = published_elem.text.strip()
+                    
+                    # Categories
+                    categories = []
+                    for category in entry.findall('atom:category', ns):
+                        term = category.get('term')
+                        if term:
+                            categories.append(term)
+                    metadata['categories'] = categories
+                    
+                    # DOI (if available)
+                    doi_elem = entry.find('atom:doi', ns)
+                    if doi_elem is not None:
+                        metadata['doi'] = doi_elem.text.strip()
+                    
+                    # URL
+                    metadata['url'] = f"https://arxiv.org/abs/{arxiv_id}"
+                    
+                    return metadata
+            
+            logger.warning(f"arXiv API returned status {response.status_code} for ID: {arxiv_id}")
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching arXiv metadata for {arxiv_id}: {e}")
+        return None
+
+
+async def fetch_pubmed_metadata(pmid: str) -> Optional[Dict]:
+    """Fetch metadata from PubMed API for a given PMID."""
+    try:
+        url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={pmid}&retmode=json"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                result = data.get('result', {}).get(pmid, {})
+                
+                if result and 'error' not in result:
+                    metadata = {}
+                    
+                    # Title
+                    metadata['title'] = result.get('title', '')
+                    
+                    # Authors
+                    authors = []
+                    for author in result.get('authors', []):
+                        name = author.get('name', '')
+                        if name:
+                            authors.append(name)
+                    metadata['authors'] = authors
+                    
+                    # Journal
+                    metadata['journal'] = result.get('fulljournalname', result.get('source', ''))
+                    
+                    # Publication date
+                    pub_date = result.get('pubdate', '')
+                    metadata['date'] = pub_date
+                    
+                    # DOI
+                    for articleid in result.get('articleids', []):
+                        if articleid.get('idtype') == 'doi':
+                            metadata['doi'] = articleid.get('value')
+                            break
+                    
+                    # Volume, Issue, Pages
+                    metadata['volume'] = result.get('volume', '')
+                    metadata['issue'] = result.get('issue', '')
+                    metadata['pages'] = result.get('pages', '')
+                    
+                    # URL
+                    metadata['url'] = f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"
+                    
+                    return metadata
+            
+            logger.warning(f"PubMed API returned status {response.status_code} for PMID: {pmid}")
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching PubMed metadata for {pmid}: {e}")
+        return None
+
+
+# ============================================================================
 # Zotero Integration Functions
 # ============================================================================
 
 def search_zotero_by_doi(doi: str) -> bool:
     """Check if item with DOI already exists in Zotero library."""
     try:
-        results = zot.items(q=doi, limit=5)
-        for item in results:
-            item_doi = item.get('data', {}).get('DOI', '')
-            if item_doi and item_doi.lower() == doi.lower():
+        # Normalize DOI
+        normalized_doi = doi.strip().lower()
+        
+        # First, try searching with the DOI string - check both full DOI and just the suffix
+        search_terms = [doi, normalized_doi]
+        
+        # Also try just the suffix (after "10.")
+        if '/' in doi:
+            suffix = doi.split('/', 1)[1]
+            search_terms.append(suffix)
+        
+        all_results = []
+        for term in search_terms:
+            try:
+                results = zot.items(q=term, limit=100)
+                all_results.extend(results)
+            except Exception:
+                continue
+        
+        # Check all results
+        seen_keys = set()
+        for item in all_results:
+            # Skip duplicates from multiple searches
+            item_key = item.get('key')
+            if item_key in seen_keys:
+                continue
+            seen_keys.add(item_key)
+            
+            item_data = item.get('data', {})
+            item_doi = item_data.get('DOI', '').strip().lower()
+            if item_doi and item_doi == normalized_doi:
+                logger.info(f"Found existing item with DOI: {doi}")
                 return True
+            
+            # Also check extra field where DOI might be stored
+            extra = item_data.get('extra', '')
+            if extra and normalized_doi in extra.lower():
+                logger.info(f"Found existing item with DOI in extra field: {doi}")
+                return True
+        
+        # If text search didn't find it, check recent items as fallback
+        # This handles cases where the text search doesn't index DOI field well
+        try:
+            recent_items = zot.top(limit=100)
+            for item in recent_items:
+                item_data = item.get('data', {})
+                item_doi = item_data.get('DOI', '').strip().lower()
+                if item_doi and item_doi == normalized_doi:
+                    logger.info(f"Found existing item with DOI in recent items: {doi}")
+                    return True
+        except Exception:
+            pass
+        
         return False
     except Exception as e:
         logger.error(f"Error searching Zotero by DOI: {e}")
@@ -164,11 +356,75 @@ def search_zotero_by_doi(doi: str) -> bool:
 def search_zotero_by_url(url: str) -> bool:
     """Check if item with URL already exists in Zotero library."""
     try:
-        results = zot.items(q=url, limit=5)
-        for item in results:
-            item_url = item.get('data', {}).get('url', '')
-            if item_url and item_url.lower() == url.lower():
+        # Normalize URL (remove trailing slashes, convert to lowercase for comparison)
+        normalized_url = url.strip().rstrip('/').lower()
+        
+        # Also check common URL variations
+        url_variations = [normalized_url]
+        
+        # Add http/https variations
+        if normalized_url.startswith('https://'):
+            url_variations.append(normalized_url.replace('https://', 'http://'))
+        elif normalized_url.startswith('http://'):
+            url_variations.append(normalized_url.replace('http://', 'https://'))
+        
+        # Extract domain for searching
+        domain_match = re.search(r'https?://([^/]+)', url)
+        search_terms = []
+        if domain_match:
+            search_terms.append(domain_match.group(1))
+        
+        # Add the full URL
+        search_terms.append(url)
+        
+        # Search with multiple terms
+        all_results = []
+        for term in search_terms:
+            try:
+                results = zot.items(q=term, limit=100)
+                all_results.extend(results)
+            except Exception:
+                continue
+        
+        # Check all results
+        seen_keys = set()
+        for item in all_results:
+            # Skip duplicates from multiple searches
+            item_key = item.get('key')
+            if item_key in seen_keys:
+                continue
+            seen_keys.add(item_key)
+            
+            item_data = item.get('data', {})
+            item_url = item_data.get('url', '').strip().rstrip('/').lower()
+            
+            if item_url and item_url in url_variations:
+                logger.info(f"Found existing item with URL: {url}")
                 return True
+            
+            # Check if URL contains the DOI path
+            if 'doi.org' in normalized_url:
+                doi_match = re.search(r'doi\.org/(10\.\S+)', normalized_url)
+                if doi_match:
+                    doi = doi_match.group(1)
+                    item_doi = item_data.get('DOI', '').strip().lower()
+                    if item_doi and item_doi == doi.lower():
+                        logger.info(f"Found existing item with matching DOI from URL: {url}")
+                        return True
+        
+        # Check recent items as fallback
+        try:
+            recent_items = zot.top(limit=100)
+            for item in recent_items:
+                item_data = item.get('data', {})
+                item_url = item_data.get('url', '').strip().rstrip('/').lower()
+                
+                if item_url and item_url in url_variations:
+                    logger.info(f"Found existing item with URL in recent items: {url}")
+                    return True
+        except Exception:
+            pass
+        
         return False
     except Exception as e:
         logger.error(f"Error searching Zotero by URL: {e}")
@@ -178,51 +434,236 @@ def search_zotero_by_url(url: str) -> bool:
 def search_zotero_by_title(title: str) -> bool:
     """Check if item with similar title already exists in Zotero library."""
     try:
-        results = zot.items(q=title, limit=5)
-        if results:
-            # Simple check - if we get results with the title query
-            return True
+        if not title or len(title) < 10:
+            return False
+        
+        # Normalize title for comparison
+        normalized_title = ' '.join(title.lower().split())
+        
+        results = zot.items(q=title, limit=20)
+        for item in results:
+            item_title = item.get('data', {}).get('title', '').lower()
+            item_title_normalized = ' '.join(item_title.split())
+            
+            # Check for exact or very similar match
+            if item_title_normalized == normalized_title:
+                logger.info(f"Found existing item with matching title: {title[:50]}...")
+                return True
+        
         return False
     except Exception as e:
         logger.error(f"Error searching Zotero by title: {e}")
         return False
 
 
+def check_duplicate_comprehensive(doi: Optional[str] = None, url: Optional[str] = None, title: Optional[str] = None) -> bool:
+    """
+    Comprehensive duplicate check using multiple fields.
+    Returns True if a duplicate is found.
+    """
+    logger.debug(f"Comprehensive duplicate check - DOI: {doi}, URL: {url}, Title: {title[:50] if title else None}...")
+    
+    # Check DOI first (most reliable)
+    if doi:
+        logger.debug(f"Checking DOI: {doi}")
+        if search_zotero_by_doi(doi):
+            logger.info(f"Duplicate found via DOI: {doi}")
+            return True
+    
+    # Check URL
+    if url:
+        logger.debug(f"Checking URL: {url}")
+        if search_zotero_by_url(url):
+            logger.info(f"Duplicate found via URL: {url}")
+            return True
+    
+    # Check title as last resort
+    if title:
+        logger.debug(f"Checking title: {title[:50]}...")
+        if search_zotero_by_title(title):
+            logger.info(f"Duplicate found via title: {title[:50]}...")
+            return True
+    
+    logger.debug("No duplicate found")
+    return False
+
+
 async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> Tuple[bool, str]:
     """
-    Add item to Zotero by identifier (DOI, arXiv ID, PMID).
+    Add item to Zotero by identifier (DOI, arXiv ID, PMID) with full metadata.
     Returns (success, message)
     """
     try:
-        # Check for duplicates
+        metadata = None
+        
+        # Fetch metadata based on identifier type
         if identifier_type == 'doi':
-            if search_zotero_by_doi(identifier):
+            # Check for duplicate DOI first
+            logger.info(f"Checking for duplicate DOI: {identifier}")
+            if check_duplicate_comprehensive(doi=identifier):
+                logger.info(f"Duplicate found for DOI: {identifier}")
                 return (False, "duplicate")
-        
-        # Create item template
-        template = zot.item_template('journalArticle')
-        
-        # Add identifier to appropriate field
-        if identifier_type == 'doi':
-            template['DOI'] = identifier
-            # Try to fetch metadata from DOI
-            try:
-                items = zot.create_items([template])
-                logger.info(f"Added item with DOI: {identifier}")
-                return (True, "success")
-            except Exception as e:
-                logger.error(f"Error adding DOI: {e}")
-                return (False, str(e))
+            logger.info(f"No duplicate found, fetching metadata for DOI: {identifier}")
+            metadata = await fetch_crossref_metadata(identifier)
+            if metadata:
+                # Create journal article template
+                template = zot.item_template('journalArticle')
+                
+                # Populate with CrossRef metadata
+                template['DOI'] = identifier
+                template['title'] = metadata.get('title', [''])[0] if isinstance(metadata.get('title'), list) else metadata.get('title', '')
+                
+                # Authors
+                if 'author' in metadata:
+                    creators = []
+                    for author in metadata['author']:
+                        creator = {
+                            'creatorType': 'author',
+                            'firstName': author.get('given', ''),
+                            'lastName': author.get('family', '')
+                        }
+                        creators.append(creator)
+                    template['creators'] = creators
+                
+                # Journal info
+                container_title = metadata.get('container-title', [])
+                if container_title:
+                    template['publicationTitle'] = container_title[0] if isinstance(container_title, list) else container_title
+                
+                # Volume, Issue, Pages
+                template['volume'] = metadata.get('volume', '')
+                template['issue'] = metadata.get('issue', '')
+                template['pages'] = metadata.get('page', '')
+                
+                # Date
+                published = metadata.get('published', {}) or metadata.get('published-print', {})
+                if published and 'date-parts' in published:
+                    date_parts = published['date-parts'][0]
+                    if len(date_parts) >= 1:
+                        template['date'] = '-'.join(map(str, date_parts))
+                
+                # Abstract
+                template['abstractNote'] = metadata.get('abstract', '')
+                
+                # URL
+                template['url'] = metadata.get('URL', f"https://doi.org/{identifier}")
+                
+                try:
+                    items = zot.create_items([template])
+                    logger.info(f"Added item with DOI and metadata: {identifier}")
+                    return (True, "success")
+                except Exception as e:
+                    logger.error(f"Error creating Zotero item: {e}")
+                    return (False, str(e))
+            else:
+                logger.warning(f"Could not fetch metadata for DOI: {identifier}")
+                return (False, "metadata_fetch_failed")
         
         elif identifier_type == 'arxiv':
-            # For arXiv, we'll use the URL approach
-            url = f"https://arxiv.org/abs/{identifier}"
-            return await add_to_zotero_by_url(url)
+            metadata = await fetch_arxiv_metadata(identifier)
+            if metadata:
+                # Comprehensive duplicate check
+                if check_duplicate_comprehensive(
+                    doi=metadata.get('doi'),
+                    url=metadata.get('url'),
+                    title=metadata.get('title')
+                ):
+                    return (False, "duplicate")
+                
+                # Create preprint template
+                template = zot.item_template('preprint')
+                
+                # Populate with arXiv metadata
+                template['title'] = metadata.get('title', '')
+                template['abstractNote'] = metadata.get('abstract', '')
+                template['url'] = metadata['url']
+                template['repository'] = 'arXiv'
+                template['archiveID'] = identifier
+                
+                # Authors
+                if 'authors' in metadata:
+                    creators = []
+                    for author_name in metadata['authors']:
+                        # Split name (basic approach)
+                        parts = author_name.rsplit(' ', 1)
+                        creator = {
+                            'creatorType': 'author',
+                            'firstName': parts[0] if len(parts) > 1 else '',
+                            'lastName': parts[-1]
+                        }
+                        creators.append(creator)
+                    template['creators'] = creators
+                
+                # Date
+                if 'published' in metadata:
+                    template['date'] = metadata['published'].split('T')[0]
+                
+                # DOI if available
+                if 'doi' in metadata:
+                    template['DOI'] = metadata['doi']
+                
+                try:
+                    items = zot.create_items([template])
+                    logger.info(f"Added arXiv item with metadata: {identifier}")
+                    return (True, "success")
+                except Exception as e:
+                    logger.error(f"Error creating Zotero item: {e}")
+                    return (False, str(e))
+            else:
+                logger.warning(f"Could not fetch metadata for arXiv: {identifier}")
+                return (False, "metadata_fetch_failed")
         
         elif identifier_type == 'pubmed':
-            # For PubMed, we'll use the URL approach
-            url = f"https://pubmed.ncbi.nlm.nih.gov/{identifier}/"
-            return await add_to_zotero_by_url(url)
+            metadata = await fetch_pubmed_metadata(identifier)
+            if metadata:
+                # Comprehensive duplicate check
+                if check_duplicate_comprehensive(
+                    doi=metadata.get('doi'),
+                    url=metadata.get('url'),
+                    title=metadata.get('title')
+                ):
+                    return (False, "duplicate")
+                
+                # Create journal article template
+                template = zot.item_template('journalArticle')
+                
+                # Populate with PubMed metadata
+                template['title'] = metadata.get('title', '')
+                template['publicationTitle'] = metadata.get('journal', '')
+                template['volume'] = metadata.get('volume', '')
+                template['issue'] = metadata.get('issue', '')
+                template['pages'] = metadata.get('pages', '')
+                template['date'] = metadata.get('date', '')
+                template['url'] = metadata['url']
+                
+                # DOI if available
+                if 'doi' in metadata:
+                    template['DOI'] = metadata['doi']
+                
+                # Authors
+                if 'authors' in metadata:
+                    creators = []
+                    for author_name in metadata['authors']:
+                        # Parse name (format: "Last FM")
+                        parts = author_name.split(' ', 1)
+                        creator = {
+                            'creatorType': 'author',
+                            'lastName': parts[0],
+                            'firstName': parts[1] if len(parts) > 1 else ''
+                        }
+                        creators.append(creator)
+                    template['creators'] = creators
+                
+                try:
+                    items = zot.create_items([template])
+                    logger.info(f"Added PubMed item with metadata: {identifier}")
+                    return (True, "success")
+                except Exception as e:
+                    logger.error(f"Error creating Zotero item: {e}")
+                    return (False, str(e))
+            else:
+                logger.warning(f"Could not fetch metadata for PubMed: {identifier}")
+                return (False, "metadata_fetch_failed")
         
         return (False, "unsupported_identifier_type")
         
@@ -231,32 +672,142 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> 
         return (False, str(e))
 
 
+async def fetch_webpage_metadata(url: str) -> Optional[Dict]:
+    """Attempt to fetch basic metadata from a webpage."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(url, headers={
+                'User-Agent': 'Mozilla/5.0 (compatible; ZoteroBot/1.0)'
+            })
+            
+            if response.status_code == 200:
+                html_content = response.text
+                metadata = {}
+                
+                # Extract title from <title> tag or meta tags
+                title_match = re.search(r'<title[^>]*>([^<]+)</title>', html_content, re.IGNORECASE)
+                if title_match:
+                    metadata['title'] = title_match.group(1).strip()
+                
+                # Try to extract DOI from meta tags or content
+                doi_patterns = [
+                    r'<meta[^>]+name=["\']citation_doi["\'][^>]+content=["\']([^"\']+)',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_doi',
+                ]
+                for pattern in doi_patterns:
+                    match = re.search(pattern, html_content, re.IGNORECASE)
+                    if match:
+                        metadata['doi'] = match.group(1)
+                        break
+                
+                # Extract publication date
+                date_patterns = [
+                    r'<meta[^>]+name=["\']citation_publication_date["\'][^>]+content=["\']([^"\']+)',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_publication_date',
+                ]
+                for pattern in date_patterns:
+                    match = re.search(pattern, html_content, re.IGNORECASE)
+                    if match:
+                        metadata['date'] = match.group(1)
+                        break
+                
+                # Extract journal name
+                journal_patterns = [
+                    r'<meta[^>]+name=["\']citation_journal_title["\'][^>]+content=["\']([^"\']+)',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_journal_title',
+                ]
+                for pattern in journal_patterns:
+                    match = re.search(pattern, html_content, re.IGNORECASE)
+                    if match:
+                        metadata['journal'] = match.group(1)
+                        break
+                
+                # Extract authors
+                author_patterns = [
+                    r'<meta[^>]+name=["\']citation_author["\'][^>]+content=["\']([^"\']+)',
+                    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']citation_author',
+                ]
+                authors = []
+                for match in re.finditer(author_patterns[0], html_content, re.IGNORECASE):
+                    authors.append(match.group(1))
+                if not authors:
+                    for match in re.finditer(author_patterns[1], html_content, re.IGNORECASE):
+                        authors.append(match.group(1))
+                if authors:
+                    metadata['authors'] = authors
+                
+                return metadata if metadata else None
+            
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching webpage metadata: {e}")
+        return None
+
+
 async def add_to_zotero_by_url(url: str) -> Tuple[bool, str]:
     """
-    Add item to Zotero by URL using web translator.
+    Add item to Zotero by URL, attempting to extract metadata.
     Returns (success, message)
     """
     try:
-        # Check for duplicates by URL
-        if search_zotero_by_url(url):
+        # Try to fetch metadata from the webpage first
+        metadata = await fetch_webpage_metadata(url)
+        
+        # Comprehensive duplicate check with all available information
+        if check_duplicate_comprehensive(
+            doi=metadata.get('doi') if metadata else None,
+            url=url,
+            title=metadata.get('title') if metadata else None
+        ):
             return (False, "duplicate")
         
-        # Try to create item from URL
-        # Pyzotero doesn't directly support web translators,
-        # so we'll create a webpage item with the URL
-        template = zot.item_template('webpage')
-        template['url'] = url
-        template['title'] = f"Paper from {url}"
+        # If we found a DOI in the metadata, use that for richer data
+        if metadata and 'doi' in metadata:
+            doi = metadata['doi']
+            logger.info(f"Found DOI {doi} in webpage, using CrossRef metadata")
+            # Note: We already checked for duplicates above, so pass through
+            return await add_to_zotero_by_identifier('doi', doi)
         
-        # Add note that this should be enriched
-        template['extra'] = f"Added from Discord bot. Original URL: {url}"
+        # Create item with available metadata
+        if metadata and metadata.get('journal'):
+            # Looks like a journal article
+            template = zot.item_template('journalArticle')
+            template['title'] = metadata.get('title', url)
+            template['publicationTitle'] = metadata.get('journal', '')
+            template['date'] = metadata.get('date', '')
+            template['url'] = url
+            
+            # Authors
+            if 'authors' in metadata:
+                creators = []
+                for author_name in metadata['authors']:
+                    # Try to split first/last name
+                    parts = author_name.rsplit(' ', 1)
+                    creator = {
+                        'creatorType': 'author',
+                        'firstName': parts[0] if len(parts) > 1 else '',
+                        'lastName': parts[-1]
+                    }
+                    creators.append(creator)
+                template['creators'] = creators
+        else:
+            # Fallback to webpage item
+            template = zot.item_template('webpage')
+            template['url'] = url
+            template['title'] = metadata.get('title', url) if metadata else url
+            
+            if metadata and 'date' in metadata:
+                template['accessDate'] = metadata['date']
+        
+        # Add extra note
+        template['extra'] = "Added via Discord Zotero Bot"
         
         try:
             items = zot.create_items([template])
-            logger.info(f"Added item from URL: {url}")
+            logger.info(f"Added item from URL with metadata: {url}")
             return (True, "success")
         except Exception as e:
-            logger.error(f"Error adding URL: {e}")
+            logger.error(f"Error creating Zotero item: {e}")
             return (False, str(e))
         
     except Exception as e:
