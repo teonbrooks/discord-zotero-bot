@@ -126,6 +126,23 @@ def extract_arxiv_id(text: str) -> Optional[str]:
     return None
 
 
+def extract_biorxiv_doi(text: str) -> Optional[str]:
+    """Extract bioRxiv DOI from text or URL."""
+    # Match bioRxiv patterns
+    # bioRxiv DOIs are typically: 10.1101/YYYY.MM.DD.XXXXXX
+    biorxiv_patterns = [
+        r'biorxiv\.org/content/(10\.1101/\d{4}\.\d{2}\.\d{2}\.\d+(?:v\d+)?)',
+        r'doi\.org/(10\.1101/\d{4}\.\d{2}\.\d{2}\.\d+)',
+        r'\b(10\.1101/\d{4}\.\d{2}\.\d{2}\.\d+(?:v\d+)?)\b',
+    ]
+    
+    for pattern in biorxiv_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return None
+
+
 def extract_pubmed_id(text: str) -> Optional[str]:
     """Extract PubMed ID from text or URL."""
     # Match PubMed patterns
@@ -150,8 +167,13 @@ def is_pdf_url(url: str) -> bool:
 def categorize_link(url: str) -> Tuple[str, Optional[str]]:
     """
     Categorize a link and extract identifier if applicable.
-    Returns (type, identifier) where type is one of: 'doi', 'arxiv', 'pubmed', 'pdf', 'generic'
+    Returns (type, identifier) where type is one of: 'doi', 'arxiv', 'biorxiv', 'pubmed', 'pdf', 'generic'
     """
+    # Check for bioRxiv first (before general DOI check, as bioRxiv uses DOIs)
+    biorxiv_doi = extract_biorxiv_doi(url)
+    if biorxiv_doi:
+        return ('biorxiv', biorxiv_doi)
+    
     # Check for DOI
     doi = extract_doi(url)
     if doi:
@@ -259,6 +281,67 @@ async def fetch_arxiv_metadata(arxiv_id: str) -> Optional[Dict]:
             return None
     except Exception as e:
         logger.error(f"Error fetching arXiv metadata for {arxiv_id}: {e}")
+        return None
+
+
+async def fetch_biorxiv_metadata(doi: str) -> Optional[Dict]:
+    """Fetch metadata from bioRxiv API for a given bioRxiv DOI."""
+    try:
+        # Remove version suffix if present (e.g., v1, v2)
+        base_doi = re.sub(r'v\d+$', '', doi)
+        
+        # bioRxiv API endpoint
+        url = f"https://api.biorxiv.org/details/biorxiv/{base_doi}"
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                
+                # bioRxiv API returns data in a 'collection' array
+                collection = data.get('collection', [])
+                if collection and len(collection) > 0:
+                    item = collection[0]
+                    metadata = {}
+                    
+                    # Title
+                    metadata['title'] = item.get('title', '')
+                    
+                    # Authors (formatted as "LastName, FirstName")
+                    authors_str = item.get('authors', '')
+                    if authors_str:
+                        # Split by semicolon or comma depending on format
+                        if ';' in authors_str:
+                            authors_list = [a.strip() for a in authors_str.split(';')]
+                        else:
+                            # Try to intelligently split by commas (tricky with "Last, First" format)
+                            authors_list = [authors_str]
+                        metadata['authors'] = authors_list
+                    
+                    # Abstract
+                    metadata['abstract'] = item.get('abstract', '')
+                    
+                    # DOI
+                    metadata['doi'] = item.get('doi', doi)
+                    
+                    # Date
+                    metadata['date'] = item.get('date', '')
+                    
+                    # Category/Subject
+                    metadata['category'] = item.get('category', '')
+                    
+                    # URL
+                    metadata['url'] = f"https://www.biorxiv.org/content/{doi}"
+                    
+                    # Version
+                    metadata['version'] = item.get('version', '')
+                    
+                    return metadata
+            
+            logger.warning(f"bioRxiv API returned status {response.status_code} for DOI: {doi}")
+            return None
+    except Exception as e:
+        logger.error(f"Error fetching bioRxiv metadata for {doi}: {e}")
         return None
 
 
@@ -653,6 +736,73 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str, tag
                 logger.warning(f"Could not fetch metadata for arXiv: {identifier}")
                 return (False, "metadata_fetch_failed")
         
+        elif identifier_type == 'biorxiv':
+            metadata = await fetch_biorxiv_metadata(identifier)
+            if metadata:
+                # Comprehensive duplicate check
+                if check_duplicate_comprehensive(
+                    doi=metadata.get('doi'),
+                    url=metadata.get('url'),
+                    title=metadata.get('title')
+                ):
+                    return (False, "duplicate")
+                
+                # Create preprint template
+                template = zot.item_template('preprint')
+                
+                # Populate with bioRxiv metadata
+                template['title'] = metadata.get('title', '')
+                template['abstractNote'] = strip_html_tags(metadata.get('abstract', ''))
+                template['url'] = metadata['url']
+                template['repository'] = 'bioRxiv'
+                template['archiveID'] = identifier
+                
+                # DOI
+                if 'doi' in metadata:
+                    template['DOI'] = metadata['doi']
+                
+                # Authors
+                if 'authors' in metadata:
+                    creators = []
+                    for author_name in metadata['authors']:
+                        # bioRxiv format can be "Last, First" or "First Last"
+                        if ',' in author_name:
+                            # Format: "Last, First"
+                            parts = author_name.split(',', 1)
+                            creator = {
+                                'creatorType': 'author',
+                                'lastName': parts[0].strip(),
+                                'firstName': parts[1].strip() if len(parts) > 1 else ''
+                            }
+                        else:
+                            # Format: "First Last" or just name
+                            parts = author_name.rsplit(' ', 1)
+                            creator = {
+                                'creatorType': 'author',
+                                'firstName': parts[0] if len(parts) > 1 else '',
+                                'lastName': parts[-1]
+                            }
+                        creators.append(creator)
+                    template['creators'] = creators
+                
+                # Date
+                if 'date' in metadata:
+                    template['date'] = metadata['date']
+                
+                # Tags
+                template['tags'] = [{'tag': tag} for tag in tags]
+                
+                try:
+                    items = zot.create_items([template])
+                    logger.info(f"Added bioRxiv item with metadata: {identifier}")
+                    return (True, "success")
+                except Exception as e:
+                    logger.error(f"Error creating Zotero item: {e}")
+                    return (False, str(e))
+            else:
+                logger.warning(f"Could not fetch metadata for bioRxiv: {identifier}")
+                return (False, "metadata_fetch_failed")
+        
         elif identifier_type == 'pubmed':
             metadata = await fetch_pubmed_metadata(identifier)
             if metadata:
@@ -879,7 +1029,7 @@ async def process_link(url: str, channel_name: Optional[str] = None) -> Tuple[bo
         tags.append(channel_name)
     
     try:
-        if link_type in ['doi', 'arxiv', 'pubmed']:
+        if link_type in ['doi', 'arxiv', 'biorxiv', 'pubmed']:
             success, message = await add_to_zotero_by_identifier(link_type, identifier, tags=tags)
         else:  # pdf or generic
             success, message = await add_to_zotero_by_url(url, tags=tags)

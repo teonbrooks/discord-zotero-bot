@@ -9,6 +9,7 @@ A Discord bot that automatically monitors channels in a "papers" category and ad
 - 📝 **Rich Metadata Extraction**: Automatically fetches complete metadata including:
   - **DOIs**: Full bibliographic data from CrossRef (title, authors, journal, volume, issue, pages, clean abstract)
   - **arXiv**: Complete preprint metadata (title, authors, abstract, categories, publication date)
+  - **bioRxiv**: Complete preprint metadata (title, authors, abstract, DOI, publication date)
   - **PubMed**: Journal article details (title, authors, journal, volume, issue, pages, DOI if available)
   - **Generic URLs**: Attempts to extract metadata from webpage meta tags
   - **Clean Abstracts**: Automatically strips XML/HTML tags from abstracts
@@ -77,6 +78,7 @@ Simply post paper links in any channel under the "papers" category:
 
 - DOI: `https://doi.org/10.1038/s41591-025-04133-4`
 - arXiv: `https://arxiv.org/abs/2401.12345`
+- bioRxiv: `https://www.biorxiv.org/content/10.1101/2023.05.15.540123v1`
 - PubMed: `https://pubmed.ncbi.nlm.nih.gov/12345678/`
 - Generic URL: `https://www.nature.com/articles/s41591-025-04133-4`
 
@@ -104,6 +106,8 @@ Displays statistics about your Zotero library:
 - Group ID
 
 ## Supported Link Types & Metadata
+
+For detailed bioRxiv support information, see [BIORXIV_SUPPORT.md](BIORXIV_SUPPORT.md).
 
 ### 1. DOI Links
 **Formats**: `doi.org/10.xxxx`, `dx.doi.org/10.xxxx`, or bare DOIs like `10.xxxx/yyyy`
@@ -135,7 +139,22 @@ Displays statistics about your Zotero library:
 - DOI (if available)
 - URL
 
-### 3. PubMed Links
+### 3. bioRxiv Links
+**Formats**: `biorxiv.org/content/10.1101/YYYY.MM.DD.XXXXXX`, or DOI `10.1101/YYYY.MM.DD.XXXXXX`
+
+**Metadata Source**: bioRxiv API
+
+**Extracted Fields**:
+- Title
+- Authors
+- Abstract
+- DOI
+- Publication date
+- Category/Subject
+- Version
+- URL
+
+### 4. PubMed Links
 **Formats**: `pubmed.ncbi.nlm.nih.gov/xxxxx`, or `PMID: xxxxx`
 
 **Metadata Source**: NCBI PubMed API
@@ -149,12 +168,12 @@ Displays statistics about your Zotero library:
 - DOI (if available)
 - URL
 
-### 4. PDF URLs
+### 5. PDF URLs
 **Formats**: Direct links ending in `.pdf`
 
 **Behavior**: Creates an attachment item in Zotero
 
-### 5. Generic Scholarly URLs
+### 6. Generic Scholarly URLs
 **Examples**: 
 - `https://www.nature.com/articles/s41591-025-04133-4`
 - Journal websites
