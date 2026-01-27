@@ -115,7 +115,11 @@ def extract_arxiv_id(text: str) -> Optional[str]:
     """Extract arXiv ID from text or URL."""
     # Match arXiv patterns
     arxiv_patterns = [
+        # arXiv DOI format: 10.48550/arXiv.XXXX.XXXXX
+        r'(?:doi\.org/)?10\.48550/arXiv\.(\d{4}\.\d{4,5}(?:v\d+)?)',
+        # Standard arXiv URLs
         r'arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)',
+        # Bare arXiv ID
         r'\b(\d{4}\.\d{4,5}(?:v\d+)?)\b',
     ]
     
@@ -169,31 +173,39 @@ def categorize_link(url: str) -> Tuple[str, Optional[str]]:
     Categorize a link and extract identifier if applicable.
     Returns (type, identifier) where type is one of: 'doi', 'arxiv', 'biorxiv', 'pubmed', 'pdf', 'generic'
     """
-    # Check for bioRxiv first (before general DOI check, as bioRxiv uses DOIs)
-    biorxiv_doi = extract_biorxiv_doi(url)
-    if biorxiv_doi:
-        return ('biorxiv', biorxiv_doi)
+    logger.debug(f"Categorizing link: {url}")
     
-    # Check for DOI
-    doi = extract_doi(url)
-    if doi:
-        return ('doi', doi)
-    
-    # Check for arXiv
+    # Check for arXiv first (including arXiv DOIs like 10.48550/arXiv.*)
     arxiv_id = extract_arxiv_id(url)
     if arxiv_id:
+        logger.info(f"Detected arXiv link with ID: {arxiv_id}")
         return ('arxiv', arxiv_id)
+    
+    # Check for bioRxiv (before general DOI check, as bioRxiv uses DOIs)
+    biorxiv_doi = extract_biorxiv_doi(url)
+    if biorxiv_doi:
+        logger.info(f"Detected bioRxiv link with DOI: {biorxiv_doi}")
+        return ('biorxiv', biorxiv_doi)
+    
+    # Check for general DOI
+    doi = extract_doi(url)
+    if doi:
+        logger.info(f"Detected DOI link: {doi}")
+        return ('doi', doi)
     
     # Check for PubMed
     pubmed_id = extract_pubmed_id(url)
     if pubmed_id:
+        logger.info(f"Detected PubMed link with ID: {pubmed_id}")
         return ('pubmed', pubmed_id)
     
     # Check for PDF
     if is_pdf_url(url):
+        logger.info(f"Detected PDF link: {url}")
         return ('pdf', url)
     
     # Generic URL
+    logger.info(f"Treating as generic URL: {url}")
     return ('generic', url)
 
 
@@ -223,7 +235,7 @@ async def fetch_arxiv_metadata(arxiv_id: str) -> Optional[Dict]:
     try:
         # Remove version suffix if present
         base_id = arxiv_id.split('v')[0]
-        url = f"http://export.arxiv.org/api/query?id_list={base_id}"
+        url = f"https://export.arxiv.org/api/query?id_list={base_id}"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url)
@@ -275,12 +287,18 @@ async def fetch_arxiv_metadata(arxiv_id: str) -> Optional[Dict]:
                     # URL
                     metadata['url'] = f"https://arxiv.org/abs/{arxiv_id}"
                     
+                    logger.info(f"Successfully parsed arXiv metadata for {arxiv_id}")
                     return metadata
-            
-            logger.warning(f"arXiv API returned status {response.status_code} for ID: {arxiv_id}")
-            return None
+                else:
+                    logger.warning(f"No entry found in arXiv API response for ID: {arxiv_id}")
+                    return None
+            else:
+                logger.warning(f"arXiv API returned status {response.status_code} for ID: {arxiv_id}")
+                return None
     except Exception as e:
         logger.error(f"Error fetching arXiv metadata for {arxiv_id}: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return None
 
 
@@ -680,14 +698,17 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str, tag
                 return (False, "metadata_fetch_failed")
         
         elif identifier_type == 'arxiv':
+            logger.info(f"Processing arXiv paper with ID: {identifier}")
             metadata = await fetch_arxiv_metadata(identifier)
             if metadata:
+                logger.info(f"Successfully fetched arXiv metadata for: {identifier}")
                 # Comprehensive duplicate check
                 if check_duplicate_comprehensive(
                     doi=metadata.get('doi'),
                     url=metadata.get('url'),
                     title=metadata.get('title')
                 ):
+                    logger.info(f"arXiv paper {identifier} is a duplicate")
                     return (False, "duplicate")
                 
                 # Create preprint template

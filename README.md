@@ -125,7 +125,10 @@ For detailed bioRxiv support information, see [BIORXIV_SUPPORT.md](BIORXIV_SUPPO
 - URL
 
 ### 2. arXiv Links
-**Formats**: `arxiv.org/abs/xxxx`, `arxiv.org/pdf/xxxx`, or bare IDs like `2401.12345`
+**Formats**: 
+- Standard: `arxiv.org/abs/xxxx`, `arxiv.org/pdf/xxxx`
+- DOI format: `doi.org/10.48550/arXiv.xxxx` (NEW!)
+- Bare IDs: `2401.12345`
 
 **Metadata Source**: arXiv API
 
