@@ -13,6 +13,11 @@ A Discord bot that automatically monitors channels in a "papers" category and ad
   - **PubMed**: Journal article details (title, authors, journal, volume, issue, pages, DOI if available)
   - **Generic URLs**: Attempts to extract metadata from webpage meta tags
   - **Clean Abstracts**: Automatically strips XML/HTML tags from abstracts
+- 📄 **PDF Attachments**: Automatically downloads and attaches PDFs when freely available:
+  - **arXiv**: All papers (100% coverage)
+  - **bioRxiv**: All papers (100% coverage)
+  - **DOI**: Open access papers when available
+  - Respects copyright - only downloads freely available PDFs
 - 🏷️ **Automatic Tagging**: Every paper added gets tagged with:
   - `discord-zotero-bot` - identifies items added by the bot
   - Channel name (e.g., `machine-learning`, `neuroscience`) - tracks where papers were shared

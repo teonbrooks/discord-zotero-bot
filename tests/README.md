@@ -4,6 +4,24 @@ This directory contains test scripts for the Zotero Discord Bot.
 
 ## Test Files
 
+### 📄 `test_pdf_urls.py`
+Tests PDF URL generation for different paper sources.
+
+**What it tests**:
+- arXiv PDF URL generation
+- bioRxiv PDF URL generation with version handling
+- DOI PDF link extraction from metadata
+- PubMed PDF handling (not yet implemented)
+
+**Run**:
+```bash
+python test_pdf_urls.py
+```
+
+**Expected output**: All 4 test categories pass (10 total tests)
+
+---
+
 ### 🧬 `test_arxiv_live.py`
 Tests arXiv paper detection and metadata fetching.
 

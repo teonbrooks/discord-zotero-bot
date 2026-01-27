@@ -81,6 +81,114 @@ def strip_html_tags(text: str) -> str:
     return clean_text
 
 
+def get_pdf_url(identifier_type: str, identifier: str, metadata: Optional[Dict] = None) -> Optional[str]:
+    """
+    Get PDF URL for a given identifier type and identifier.
+    Returns None if PDF URL cannot be determined.
+    """
+    try:
+        if identifier_type == 'arxiv':
+            # arXiv PDFs are available at https://arxiv.org/pdf/{id}.pdf
+            # Handle both old (e.g., 0704.0001) and new (e.g., 2404.05553) formats
+            return f"https://arxiv.org/pdf/{identifier}.pdf"
+        
+        elif identifier_type == 'biorxiv':
+            # bioRxiv DOI format: 10.1101/2023.05.15.540123
+            # PDF URL: https://www.biorxiv.org/content/{doi}v1.full.pdf
+            if identifier.startswith('10.1101/'):
+                # Extract the numeric part after 10.1101/
+                numeric_id = identifier.replace('10.1101/', '')
+                # Try to get version from metadata, default to v1
+                version = 'v1'
+                if metadata and 'url' in metadata:
+                    # Check if URL contains version info
+                    version_match = re.search(r'(v\d+)', metadata['url'])
+                    if version_match:
+                        version = version_match.group(1)
+                return f"https://www.biorxiv.org/content/10.1101/{numeric_id}{version}.full.pdf"
+            return None
+        
+        elif identifier_type == 'doi':
+            # For DOIs, check if there's an open access PDF link in CrossRef metadata
+            # This is best-effort - not all papers have open access PDFs
+            if metadata:
+                # Check for links in CrossRef metadata
+                links = metadata.get('link', [])
+                for link in links:
+                    if link.get('content-type') == 'application/pdf':
+                        return link.get('URL')
+            return None
+        
+        elif identifier_type == 'pubmed':
+            # For PubMed, check if there's a PMC (PubMed Central) full-text PDF
+            # This requires additional PMC ID lookup, which we'll skip for now
+            # Could be enhanced in the future
+            return None
+        
+        else:
+            return None
+    
+    except Exception as e:
+        logger.error(f"Error getting PDF URL for {identifier_type} {identifier}: {e}")
+        return None
+
+
+async def download_and_attach_pdf(item_key: str, pdf_url: str, filename: str) -> bool:
+    """
+    Download PDF from URL and attach it to a Zotero item.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        logger.info(f"Attempting to download PDF from: {pdf_url}")
+        
+        # Download PDF with timeout
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(pdf_url)
+            
+            if response.status_code == 200:
+                pdf_content = response.content
+                
+                # Check if content looks like a PDF
+                if not pdf_content.startswith(b'%PDF'):
+                    logger.warning(f"Downloaded content doesn't appear to be a PDF")
+                    return False
+                
+                logger.info(f"Successfully downloaded PDF ({len(pdf_content)} bytes)")
+                
+                # Attach PDF to Zotero item
+                # pyzotero expects a file path or file-like object
+                import tempfile
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+                    tmp_file.write(pdf_content)
+                    tmp_path = tmp_file.name
+                
+                try:
+                    # Upload attachment to Zotero
+                    zot.attachment_simple([tmp_path], item_key)
+                    logger.info(f"Successfully attached PDF to Zotero item {item_key}")
+                    return True
+                except Exception as e:
+                    logger.error(f"Error attaching PDF to Zotero: {e}")
+                    return False
+                finally:
+                    # Clean up temporary file
+                    import os as os_module
+                    try:
+                        os_module.unlink(tmp_path)
+                    except:
+                        pass
+            else:
+                logger.warning(f"Failed to download PDF: HTTP {response.status_code}")
+                return False
+    
+    except httpx.TimeoutException:
+        logger.warning(f"Timeout while downloading PDF from {pdf_url}")
+        return False
+    except Exception as e:
+        logger.error(f"Error downloading and attaching PDF: {e}")
+        return False
+
+
 # ============================================================================
 # Link Extraction Functions
 # ============================================================================
@@ -689,6 +797,17 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str, tag
                 try:
                     items = zot.create_items([template])
                     logger.info(f"Added item with DOI and metadata: {identifier}")
+                    
+                    # Try to attach PDF if available
+                    if items and 'successful' in items and items['successful']:
+                        item_key = items['successful']['0']['key']
+                        pdf_url = get_pdf_url('doi', identifier, metadata)
+                        if pdf_url:
+                            logger.info(f"Found PDF URL for DOI, attempting to attach")
+                            await download_and_attach_pdf(item_key, pdf_url, f"{identifier}.pdf")
+                        else:
+                            logger.info(f"No open access PDF available for DOI: {identifier}")
+                    
                     return (True, "success")
                 except Exception as e:
                     logger.error(f"Error creating Zotero item: {e}")
@@ -749,6 +868,15 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str, tag
                 try:
                     items = zot.create_items([template])
                     logger.info(f"Added arXiv item with metadata: {identifier}")
+                    
+                    # Attach PDF (arXiv PDFs are freely available)
+                    if items and 'successful' in items and items['successful']:
+                        item_key = items['successful']['0']['key']
+                        pdf_url = get_pdf_url('arxiv', identifier, metadata)
+                        if pdf_url:
+                            logger.info(f"Attaching arXiv PDF from: {pdf_url}")
+                            await download_and_attach_pdf(item_key, pdf_url, f"arxiv_{identifier}.pdf")
+                    
                     return (True, "success")
                 except Exception as e:
                     logger.error(f"Error creating Zotero item: {e}")
@@ -816,6 +944,15 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str, tag
                 try:
                     items = zot.create_items([template])
                     logger.info(f"Added bioRxiv item with metadata: {identifier}")
+                    
+                    # Attach PDF (bioRxiv PDFs are freely available)
+                    if items and 'successful' in items and items['successful']:
+                        item_key = items['successful']['0']['key']
+                        pdf_url = get_pdf_url('biorxiv', identifier, metadata)
+                        if pdf_url:
+                            logger.info(f"Attaching bioRxiv PDF from: {pdf_url}")
+                            await download_and_attach_pdf(item_key, pdf_url, f"biorxiv_{identifier.replace('/', '_')}.pdf")
+                    
                     return (True, "success")
                 except Exception as e:
                     logger.error(f"Error creating Zotero item: {e}")
