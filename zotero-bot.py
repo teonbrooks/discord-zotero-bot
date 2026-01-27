@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Set, Tuple, Optional
 import asyncio
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 
 import discord
 from discord.ext import commands
@@ -49,6 +50,35 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Initialize Zotero client
 zot = zotero.Zotero(ZOTERO_GROUP_ID, 'group', ZOTERO_TOKEN)
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def strip_html_tags(text: str) -> str:
+    """
+    Remove HTML/XML tags from text, keeping only the text content.
+    Specifically removes <jats:title> and other title tags completely.
+    """
+    if not text:
+        return ''
+    
+    # First, remove title tags and their content completely
+    # Matches <jats:title>...</jats:title>, <title>...</title>, etc.
+    clean_text = re.sub(r'<[^>]*title[^>]*>.*?</[^>]*title[^>]*>', '', text, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Remove remaining XML/HTML tags, replacing with a space
+    # This removes tags like <jats:p>, </jats:p>, <p>, etc.
+    clean_text = re.sub(r'<[^>]+>', ' ', clean_text)
+    
+    # Clean up extra whitespace (multiple spaces become one)
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    
+    # Remove leading/trailing whitespace
+    clean_text = clean_text.strip()
+    
+    return clean_text
 
 
 # ============================================================================
@@ -488,12 +518,15 @@ def check_duplicate_comprehensive(doi: Optional[str] = None, url: Optional[str] 
     return False
 
 
-async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> Tuple[bool, str]:
+async def add_to_zotero_by_identifier(identifier_type: str, identifier: str, tags: Optional[List[str]] = None) -> Tuple[bool, str]:
     """
     Add item to Zotero by identifier (DOI, arXiv ID, PMID) with full metadata.
     Returns (success, message)
     """
     try:
+        if tags is None:
+            tags = []
+        
         metadata = None
         
         # Fetch metadata based on identifier type
@@ -542,11 +575,15 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> 
                     if len(date_parts) >= 1:
                         template['date'] = '-'.join(map(str, date_parts))
                 
-                # Abstract
-                template['abstractNote'] = metadata.get('abstract', '')
+                # Abstract (clean XML/HTML tags)
+                raw_abstract = metadata.get('abstract', '')
+                template['abstractNote'] = strip_html_tags(raw_abstract)
                 
                 # URL
                 template['url'] = metadata.get('URL', f"https://doi.org/{identifier}")
+                
+                # Tags
+                template['tags'] = [{'tag': tag} for tag in tags]
                 
                 try:
                     items = zot.create_items([template])
@@ -575,7 +612,7 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> 
                 
                 # Populate with arXiv metadata
                 template['title'] = metadata.get('title', '')
-                template['abstractNote'] = metadata.get('abstract', '')
+                template['abstractNote'] = strip_html_tags(metadata.get('abstract', ''))
                 template['url'] = metadata['url']
                 template['repository'] = 'arXiv'
                 template['archiveID'] = identifier
@@ -601,6 +638,9 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> 
                 # DOI if available
                 if 'doi' in metadata:
                     template['DOI'] = metadata['doi']
+                
+                # Tags
+                template['tags'] = [{'tag': tag} for tag in tags]
                 
                 try:
                     items = zot.create_items([template])
@@ -653,6 +693,9 @@ async def add_to_zotero_by_identifier(identifier_type: str, identifier: str) -> 
                         }
                         creators.append(creator)
                     template['creators'] = creators
+                
+                # Tags
+                template['tags'] = [{'tag': tag} for tag in tags]
                 
                 try:
                     items = zot.create_items([template])
@@ -744,12 +787,15 @@ async def fetch_webpage_metadata(url: str) -> Optional[Dict]:
         return None
 
 
-async def add_to_zotero_by_url(url: str) -> Tuple[bool, str]:
+async def add_to_zotero_by_url(url: str, tags: Optional[List[str]] = None) -> Tuple[bool, str]:
     """
     Add item to Zotero by URL, attempting to extract metadata.
     Returns (success, message)
     """
     try:
+        if tags is None:
+            tags = []
+        
         # Try to fetch metadata from the webpage first
         metadata = await fetch_webpage_metadata(url)
         
@@ -766,7 +812,7 @@ async def add_to_zotero_by_url(url: str) -> Tuple[bool, str]:
             doi = metadata['doi']
             logger.info(f"Found DOI {doi} in webpage, using CrossRef metadata")
             # Note: We already checked for duplicates above, so pass through
-            return await add_to_zotero_by_identifier('doi', doi)
+            return await add_to_zotero_by_identifier('doi', doi, tags=tags)
         
         # Create item with available metadata
         if metadata and metadata.get('journal'):
@@ -802,6 +848,9 @@ async def add_to_zotero_by_url(url: str) -> Tuple[bool, str]:
         # Add extra note
         template['extra'] = "Added via Discord Zotero Bot"
         
+        # Tags
+        template['tags'] = [{'tag': tag} for tag in tags]
+        
         try:
             items = zot.create_items([template])
             logger.info(f"Added item from URL with metadata: {url}")
@@ -815,7 +864,7 @@ async def add_to_zotero_by_url(url: str) -> Tuple[bool, str]:
         return (False, str(e))
 
 
-async def process_link(url: str) -> Tuple[bool, bool]:
+async def process_link(url: str, channel_name: Optional[str] = None) -> Tuple[bool, bool]:
     """
     Process a single link and add to Zotero if not duplicate.
     Returns (was_added, is_duplicate)
@@ -824,11 +873,16 @@ async def process_link(url: str) -> Tuple[bool, bool]:
     
     logger.info(f"Processing link: {url} (type: {link_type})")
     
+    # Prepare tags
+    tags = ['discord-zotero-bot']
+    if channel_name:
+        tags.append(channel_name)
+    
     try:
         if link_type in ['doi', 'arxiv', 'pubmed']:
-            success, message = await add_to_zotero_by_identifier(link_type, identifier)
+            success, message = await add_to_zotero_by_identifier(link_type, identifier, tags=tags)
         else:  # pdf or generic
-            success, message = await add_to_zotero_by_url(url)
+            success, message = await add_to_zotero_by_url(url, tags=tags)
         
         if message == "duplicate":
             return (False, True)
@@ -870,6 +924,9 @@ async def process_message_for_papers(message: discord.Message) -> Dict[str, int]
     if not urls:
         return stats
     
+    # Get channel name for tagging
+    channel_name = message.channel.name if hasattr(message.channel, 'name') else None
+    
     # Process each URL
     processed_urls: Set[str] = set()
     
@@ -879,7 +936,7 @@ async def process_message_for_papers(message: discord.Message) -> Dict[str, int]
         processed_urls.add(url)
         
         try:
-            was_added, is_duplicate = await process_link(url)
+            was_added, is_duplicate = await process_link(url, channel_name=channel_name)
             
             if was_added:
                 stats['added'] += 1

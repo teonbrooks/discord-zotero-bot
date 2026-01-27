@@ -7,10 +7,14 @@ A Discord bot that automatically monitors channels in a "papers" category and ad
 - 🤖 **Real-time Monitoring**: Automatically detects paper links posted in channels under the "papers" category
 - 🔗 **Multi-format Support**: Handles DOIs, arXiv links, PubMed links, PDF URLs, and generic scholarly URLs (Nature, Science, etc.)
 - 📝 **Rich Metadata Extraction**: Automatically fetches complete metadata including:
-  - **DOIs**: Full bibliographic data from CrossRef (title, authors, journal, volume, issue, pages, abstract)
+  - **DOIs**: Full bibliographic data from CrossRef (title, authors, journal, volume, issue, pages, clean abstract)
   - **arXiv**: Complete preprint metadata (title, authors, abstract, categories, publication date)
   - **PubMed**: Journal article details (title, authors, journal, volume, issue, pages, DOI if available)
   - **Generic URLs**: Attempts to extract metadata from webpage meta tags
+  - **Clean Abstracts**: Automatically strips XML/HTML tags from abstracts
+- 🏷️ **Automatic Tagging**: Every paper added gets tagged with:
+  - `discord-zotero-bot` - identifies items added by the bot
+  - Channel name (e.g., `machine-learning`, `neuroscience`) - tracks where papers were shared
 - ✅ **Smart Duplicate Detection**: Comprehensive checking across DOI, URL, and title to prevent duplicates
   - Handles URL variations (http/https, trailing slashes)
   - Recognizes same paper from different sources (e.g., DOI URL vs journal URL)
@@ -201,6 +205,42 @@ Second: http://example.com/paper/ → ✅ Duplicate detected
 The bot will react with ✅ when a duplicate is detected, indicating the paper is already in your library.
 
 For more details, see [DUPLICATE_DETECTION.md](DUPLICATE_DETECTION.md).
+
+## Automatic Tagging
+
+Every paper added to your Zotero library is automatically tagged with:
+
+### Bot Tag
+**`discord-zotero-bot`** - Applied to all items added by the bot
+
+This makes it easy to:
+- Filter for bot-added papers in Zotero
+- See how many papers the bot has added
+- Distinguish bot imports from manual additions
+
+### Channel Tag
+**Channel name** (e.g., `machine-learning`, `papers-to-read`, `neuroscience`)
+
+This helps you:
+- Track which Discord channel a paper came from
+- Organize papers by topic/community
+- Find papers shared in specific channels
+
+### Example in Zotero
+
+When you add a paper from the `#machine-learning` channel:
+
+```
+Title: A multimodal sleep foundation model for disease prediction
+Tags: discord-zotero-bot, machine-learning
+```
+
+### Filtering by Tags in Zotero
+
+- Click on a tag to see all papers with that tag
+- Use tag colors to highlight important channels
+- Search for `discord-zotero-bot` to see all bot-added papers
+- Combine tags: e.g., show all papers from `machine-learning` channel
 
 ## Logging
 
