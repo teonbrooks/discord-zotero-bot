@@ -107,7 +107,13 @@ Displays statistics about your Zotero library:
 
 ## Supported Link Types & Metadata
 
-For detailed bioRxiv support information, see [BIORXIV_SUPPORT.md](BIORXIV_SUPPORT.md).
+📚 **Comprehensive documentation available in the [`docs/`](docs/) folder!**
+
+- **[Documentation Index](docs/index.md)** - Complete documentation overview
+- **[DOI/CrossRef](docs/support/doi_crossref_support.md)** - Published articles
+- **[arXiv](docs/support/arxiv_troubleshooting.md)** - Physics, CS, Math preprints
+- **[bioRxiv](docs/support/biorxiv_support.md)** - Biology preprints
+- **[PubMed](docs/support/pubmed_support.md)** - Biomedical literature
 
 ### 1. DOI Links
 **Formats**: `doi.org/10.xxxx`, `dx.doi.org/10.xxxx`, or bare DOIs like `10.xxxx/yyyy`
