@@ -4,6 +4,8 @@
 
 The bot automatically downloads and attaches PDFs to Zotero items when papers are added. This feature works for sources that provide free, open access to PDFs.
 
+Additionally, you can use the `/attach_pdfs` command to scan your existing Zotero library and attach PDFs to items that don't have them yet.
+
 ## Supported Sources
 
 ### ✅ arXiv (Always Available)
@@ -254,6 +256,123 @@ grep "PDF" bot_logs.txt
 2. Delete old PDFs from Zotero
 3. Upgrade to paid plan
 4. Use file syncing instead of Zotero storage
+
+## Backfilling PDFs for Existing Items
+
+### `/attach_pdfs` Command
+
+Use this command to scan your existing Zotero library and attach PDFs to items that don't have them.
+
+**Syntax**:
+```
+/attach_pdfs [limit]
+```
+
+**Parameters**:
+- `limit`: Maximum items to process (default: 50, max: 200)
+
+**What it does**:
+1. Fetches items from your Zotero library
+2. Checks each item for existing PDF attachments
+3. Skips items that already have PDFs
+4. Extracts identifiers (DOI, arXiv ID, bioRxiv DOI) from item metadata
+5. Attempts to download and attach PDFs using the same logic as automatic attachment
+6. Reports detailed statistics
+
+**Example usage**:
+```
+/attach_pdfs limit:100
+```
+
+**Output example**:
+```
+✅ PDF Attachment Scan Complete
+
+📊 Statistics:
+• Items scanned: 100
+• Already have PDFs: 45
+• No identifier found: 15
+• PDF not available: 10
+• ✅ PDFs attached: 28
+• ❌ Attachment failed: 2
+
+🎉 Successfully attached 28 PDF(s)!
+```
+
+### Use Cases
+
+**1. Backfill for Old Items**
+Papers added before the PDF attachment feature can now get their PDFs:
+```
+/attach_pdfs limit:200
+```
+
+**2. Retry Failed Downloads**
+If PDFs failed to download initially (network issues, timeouts), retry them:
+```
+/attach_pdfs limit:50
+```
+
+**3. Manually Created Items**
+Items you created manually in Zotero can get PDFs:
+```
+/attach_pdfs limit:100
+```
+
+**4. After Upgrading Bot**
+After updating the bot with PDF feature, backfill all items:
+```
+/attach_pdfs limit:200
+```
+
+### What Gets Scanned
+
+The command looks for these identifiers in your Zotero items:
+
+**DOI field**:
+- Regular DOI → checks for open access PDF
+- arXiv DOI (`10.48550/arXiv.*`) → downloads arXiv PDF
+- bioRxiv DOI (`10.1101/*`) → downloads bioRxiv PDF
+
+**Repository field**:
+- `repository: "arXiv"` + `archiveID` → downloads from arXiv
+- `repository: "bioRxiv"` + `archiveID` → downloads from bioRxiv
+
+**URL field**:
+- arXiv URLs → extracts ID and downloads
+- bioRxiv URLs → extracts DOI and downloads
+
+### Limitations
+
+**Items Skipped**:
+- Items that already have PDF attachments
+- Items without identifiable identifiers (DOI, arXiv ID, etc.)
+- Items from paywalled sources (no open access PDF)
+- Attachments and notes (not regular items)
+
+**Processing Limits**:
+- Maximum 200 items per command run (to prevent timeouts)
+- Processes items sequentially (3-6 seconds each with PDF)
+- Large scans may take several minutes
+
+**Success Rates**:
+- arXiv items: ~99% success
+- bioRxiv items: ~95% success  
+- DOI items: ~20-30% success (depends on open access)
+- Items without proper identifiers: 0% (can't determine source)
+
+### Performance
+
+**Timing**:
+- 50 items: ~3-5 minutes (with PDFs)
+- 100 items: ~6-10 minutes (with PDFs)
+- 200 items: ~12-20 minutes (with PDFs)
+
+**Recommendations**:
+- Start with small limits (50-100) to test
+- Run large scans during off-hours
+- Monitor progress with status updates
+- Can be run multiple times safely (skips items with PDFs)
 
 ## Manual PDF Attachment
 

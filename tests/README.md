@@ -77,6 +77,32 @@ uv run python test_abstract_cleaning.py
 
 ---
 
+### 📎 `test_zotero_attachment.py`
+Diagnostic tool to test PDF attachment functionality.
+
+**What it tests**:
+- Zotero API connection
+- `attachment_simple()` method signature
+- Creating valid test PDFs
+- Attaching PDF to Zotero items
+- Verifying attachment was created
+
+**Run**:
+```bash
+cd tests
+uv run python test_zotero_attachment.py
+```
+
+**Expected output**: All tests pass, confirms PDFs can be attached
+
+**Use cases**:
+- Diagnose PDF attachment issues
+- Verify Zotero API credentials
+- Test attachment after bot updates
+- Understand pyzotero attachment API
+
+---
+
 ### 🔍 `test_duplicates.py`
 Interactive tool to test duplicate detection in your Zotero library.
 

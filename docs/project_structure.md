@@ -24,6 +24,7 @@ zotero-bot/
 │   ├── duplicate_detection.md    # Duplicate prevention
 │   ├── debugging_duplicates.md   # Troubleshooting duplicates
 │   ├── tagging_and_abstracts.md  # Auto-tagging & cleaning
+│   ├── pdf_attachments.md        # PDF download & attachment
 │   ├── testing.md                # Testing guide
 │   │
 │   └── 📁 support/               # 🔗 Paper Source Support Docs

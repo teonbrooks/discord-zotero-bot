@@ -10,3 +10,8 @@ dependencies = [
     "pyzotero>=1.7.6",
     "httpx>=0.28.1",
 ]
+
+[dependency-groups]
+dev = [
+    "ipython>=9.9.0",
+]

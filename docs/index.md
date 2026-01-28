@@ -40,6 +40,7 @@ Documentation for each supported paper source (located in [`support/`](support/)
 - **[Metadata Extraction](metadata_improvements.md)** - How metadata is fetched and processed
 - **[Duplicate Detection](duplicate_detection.md)** - Preventing duplicate entries
 - **[Tagging & Abstracts](tagging_and_abstracts.md)** - Automatic tagging and abstract cleaning
+- **[PDF Attachments](pdf_attachments.md)** - Automatic PDF download and attachment
 
 ### Troubleshooting
 - **[Debugging Duplicates](debugging_duplicates.md)** - Diagnosing duplicate issues

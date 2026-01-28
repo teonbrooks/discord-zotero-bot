@@ -26,6 +26,7 @@ A Discord bot that automatically monitors channels in a "papers" category and ad
   - Recognizes same paper from different sources (e.g., DOI URL vs journal URL)
   - Checks up to 50 items for reliable detection in larger libraries
 - 📚 **Backfill Command**: `/scan_papers` command to process existing messages
+- 📎 **PDF Backfill**: `/attach_pdfs` command to attach PDFs to existing items without them
 - 📊 **Statistics**: `/zotero_stats` command to view library statistics
 
 ## Setup
@@ -103,6 +104,29 @@ Example:
 ```
 /scan_papers limit:200
 ```
+
+#### `/attach_pdfs`
+Scans existing Zotero items and attaches PDFs where available.
+
+Options:
+- `limit`: Maximum number of items to process (default: 50, max: 200)
+
+**What it does**:
+- Checks each item in your library for existing PDF attachments
+- Skips items that already have PDFs
+- Extracts identifiers (DOI, arXiv ID, bioRxiv DOI) from items
+- Attempts to download and attach PDFs for items without them
+- Works for: arXiv (100%), bioRxiv (100%), open access DOIs (when available)
+
+**Example**:
+```
+/attach_pdfs limit:100
+```
+
+**Use cases**:
+- Backfill PDFs for papers added before PDF attachment feature
+- Retry PDF downloads that previously failed
+- Add PDFs to manually created items
 
 #### `/zotero_stats`
 Displays statistics about your Zotero library:

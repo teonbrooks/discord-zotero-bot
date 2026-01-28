@@ -138,6 +138,10 @@ async def download_and_attach_pdf(item_key: str, pdf_url: str, filename: str) ->
     Download PDF from URL and attach it to a Zotero item.
     Returns True if successful, False otherwise.
     """
+    import tempfile
+    import os as os_module
+    
+    tmp_path = None
     try:
         logger.info(f"Attempting to download PDF from: {pdf_url}")
         
@@ -145,48 +149,123 @@ async def download_and_attach_pdf(item_key: str, pdf_url: str, filename: str) ->
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             response = await client.get(pdf_url)
             
-            if response.status_code == 200:
-                pdf_content = response.content
-                
-                # Check if content looks like a PDF
-                if not pdf_content.startswith(b'%PDF'):
-                    logger.warning(f"Downloaded content doesn't appear to be a PDF")
-                    return False
-                
-                logger.info(f"Successfully downloaded PDF ({len(pdf_content)} bytes)")
-                
-                # Attach PDF to Zotero item
-                # pyzotero expects a file path or file-like object
-                import tempfile
-                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
-                    tmp_file.write(pdf_content)
-                    tmp_path = tmp_file.name
-                
-                try:
-                    # Upload attachment to Zotero
-                    zot.attachment_simple([tmp_path], item_key)
-                    logger.info(f"Successfully attached PDF to Zotero item {item_key}")
-                    return True
-                except Exception as e:
-                    logger.error(f"Error attaching PDF to Zotero: {e}")
-                    return False
-                finally:
-                    # Clean up temporary file
-                    import os as os_module
-                    try:
-                        os_module.unlink(tmp_path)
-                    except:
-                        pass
-            else:
+            if response.status_code != 200:
                 logger.warning(f"Failed to download PDF: HTTP {response.status_code}")
                 return False
+            
+            pdf_content = response.content
+            
+            # Check if content looks like a PDF
+            if not pdf_content.startswith(b'%PDF'):
+                logger.warning(f"Downloaded content doesn't appear to be a PDF (size: {len(pdf_content)} bytes)")
+                return False
+            
+            logger.info(f"Successfully downloaded PDF ({len(pdf_content)} bytes)")
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', mode='wb') as tmp_file:
+                tmp_file.write(pdf_content)
+                tmp_path = tmp_file.name
+            
+            logger.info(f"Saved PDF to temporary file: {tmp_path}")
+            
+            # Method 1: Try attachment_simple with parentid
+            try:
+                logger.info(f"Attempting attachment using attachment_simple (parentid={item_key})")
+                result = zot.attachment_simple([tmp_path], parentid=item_key)
+                logger.info(f"attachment_simple result: {result}")
+                
+                # Check if the result indicates success or failure
+                # Result format: {'success': [...], 'failure': [...], 'unchanged': [...]}
+                method1_success = False
+                
+                if isinstance(result, dict):
+                    success_list = result.get('success', [])
+                    failure_list = result.get('failure', [])
+                    
+                    logger.info(f"Success items: {len(success_list)}, Failure items: {len(failure_list)}")
+                    
+                    if failure_list:
+                        logger.warning(f"attachment_simple reported failures: {failure_list}")
+                        raise Exception(f"attachment_simple failed: {failure_list[0] if failure_list else 'unknown error'}")
+                    
+                    if not success_list:
+                        logger.warning(f"attachment_simple returned empty success list")
+                        raise Exception("attachment_simple returned no successful attachments")
+                    
+                    # Success list has items - verify by checking children
+                    logger.info(f"attachment_simple reported success, verifying...")
+                
+                # Verify the attachment was actually created
+                try:
+                    children = zot.children(item_key)
+                    has_pdf = any(
+                        child['data'].get('itemType') == 'attachment' 
+                        for child in children
+                    )
+                    if has_pdf:
+                        logger.info(f"✓ Verified: PDF attachment exists for item {item_key}")
+                        return True
+                    else:
+                        logger.warning(f"attachment_simple reported success but no attachment found in children")
+                        raise Exception("Attachment not found after successful API call")
+                except Exception as verify_error:
+                    logger.warning(f"Verification failed: {verify_error}")
+                    raise
+                
+            except Exception as e1:
+                logger.warning(f"Method 1 (attachment_simple) failed: {e1}")
+                
+                # Method 2: Try creating attachment item manually
+                try:
+                    logger.info(f"Attempting manual attachment creation for item {item_key}")
+                    
+                    # Create attachment template
+                    template = zot.item_template('attachment', 'imported_file')
+                    template['parentItem'] = item_key
+                    template['title'] = filename
+                    template['contentType'] = 'application/pdf'
+                    template['filename'] = filename
+                    
+                    # Create the attachment item first
+                    created = zot.create_items([template])
+                    logger.info(f"Created attachment item: {created}")
+                    breakpoint()
+                    
+                    if created and 'successful' in created and created['successful']:
+                        attachment_key = created['successful']['0']['key']
+                        logger.info(f"Attachment item created with key: {attachment_key}")
+                        
+                        # Now upload the file to the attachment
+                        with open(tmp_path, 'rb') as f:
+                            result = zot.upload_attachment(attachment_key, f)
+                        
+                        logger.info(f"✓ Successfully uploaded PDF using manual method: {result}")
+                        return True
+                    else:
+                        logger.error(f"Failed to create attachment item: {created}")
+                        return False
+                        
+                except Exception as e2:
+                    logger.error(f"Manual attachment creation also failed: {e2}")
+                    logger.exception(e2)
+                    return False
     
     except httpx.TimeoutException:
         logger.warning(f"Timeout while downloading PDF from {pdf_url}")
         return False
     except Exception as e:
         logger.error(f"Error downloading and attaching PDF: {e}")
+        logger.exception(e)
         return False
+    finally:
+        # Clean up temporary file
+        if tmp_path:
+            try:
+                os_module.unlink(tmp_path)
+                logger.debug(f"Cleaned up temporary file: {tmp_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to clean up {tmp_path}: {cleanup_error}")
 
 
 # ============================================================================
@@ -1441,6 +1520,176 @@ async def zotero_stats(interaction: discord.Interaction):
     except Exception as e:
         logger.error(f"Error getting Zotero stats: {e}")
         await interaction.followup.send(f"❌ Error fetching statistics: {str(e)}")
+
+
+@bot.tree.command(name="attach_pdfs", description="Scan Zotero library and attach PDFs to items missing them")
+@app_commands.describe(
+    limit="Maximum number of items to process (default: 50, max: 200)"
+)
+async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
+    """Scan existing Zotero items and attach PDFs where available."""
+    await interaction.response.defer(thinking=True)
+    
+    # Validate limit
+    if limit < 1:
+        await interaction.followup.send("❌ Limit must be at least 1")
+        return
+    if limit > 200:
+        await interaction.followup.send("❌ Limit cannot exceed 200 (to prevent timeouts)")
+        return
+    
+    try:
+        logger.info(f"Starting PDF attachment scan (limit: {limit})")
+        
+        # Send initial message
+        status_msg = await interaction.followup.send(
+            f"🔍 Scanning Zotero library for items without PDFs...\n"
+            f"Checking up to {limit} items..."
+        )
+        
+        # Fetch items from Zotero
+        items = zot.top(limit=limit)
+        logger.info(f"Fetched {len(items)} items from Zotero")
+        
+        stats = {
+            'scanned': 0,
+            'has_attachment': 0,
+            'no_identifier': 0,
+            'pdf_attached': 0,
+            'pdf_failed': 0,
+            'pdf_unavailable': 0
+        }
+        
+        for item in items:
+            stats['scanned'] += 1
+            
+            # Skip if not a regular item (e.g., attachments, notes)
+            if item['data'].get('itemType') in ['attachment', 'note']:
+                continue
+            
+            item_key = item['key']
+            item_data = item['data']
+            
+            # Check if item already has attachments
+            try:
+                children = zot.children(item_key)
+                has_pdf = any(
+                    child['data'].get('itemType') == 'attachment' and 
+                    child['data'].get('contentType') == 'application/pdf'
+                    for child in children
+                )
+                
+                if has_pdf:
+                    stats['has_attachment'] += 1
+                    logger.debug(f"Item {item_key} already has PDF attachment")
+                    continue
+            except Exception as e:
+                logger.error(f"Error checking attachments for {item_key}: {e}")
+                continue
+            
+            # Extract identifier and try to attach PDF
+            identifier_type = None
+            identifier = None
+            metadata = None
+            
+            # Try to extract DOI
+            if 'DOI' in item_data and item_data['DOI']:
+                doi = item_data['DOI']
+                
+                # Check if it's arXiv DOI
+                if '10.48550/arXiv.' in doi:
+                    identifier_type = 'arxiv'
+                    identifier = doi.split('10.48550/arXiv.')[1]
+                # Check if it's bioRxiv DOI
+                elif '10.1101/' in doi:
+                    identifier_type = 'biorxiv'
+                    identifier = doi
+                    metadata = {'url': item_data.get('url', '')}
+                else:
+                    identifier_type = 'doi'
+                    identifier = doi
+            
+            # Try arXiv from archiveID or URL
+            if not identifier and item_data.get('repository') == 'arXiv':
+                if 'archiveID' in item_data:
+                    identifier_type = 'arxiv'
+                    identifier = item_data['archiveID']
+                elif 'url' in item_data:
+                    url = item_data['url']
+                    arxiv_match = re.search(r'arxiv\.org/(?:abs|pdf)/(\d+\.\d+)', url)
+                    if arxiv_match:
+                        identifier_type = 'arxiv'
+                        identifier = arxiv_match.group(1)
+            
+            # Try bioRxiv from repository or URL
+            if not identifier and item_data.get('repository') == 'bioRxiv':
+                if 'archiveID' in item_data:
+                    identifier_type = 'biorxiv'
+                    identifier = item_data['archiveID']
+                    metadata = {'url': item_data.get('url', '')}
+            
+            # If no identifier found, skip
+            if not identifier_type or not identifier:
+                stats['no_identifier'] += 1
+                logger.debug(f"No identifier found for item {item_key}")
+                continue
+            
+            # Get PDF URL
+            pdf_url = get_pdf_url(identifier_type, identifier, metadata)
+            
+            if not pdf_url:
+                stats['pdf_unavailable'] += 1
+                logger.debug(f"No PDF URL available for {identifier_type}: {identifier}")
+                continue
+            
+            # Try to download and attach PDF
+            logger.info(f"Attempting to attach PDF for {identifier_type}: {identifier}")
+            filename = f"{identifier_type}_{identifier.replace('/', '_')}.pdf"
+            
+            success = await download_and_attach_pdf(item_key, pdf_url, filename)
+            
+            if success:
+                stats['pdf_attached'] += 1
+                logger.info(f"✓ Attached PDF for {identifier_type}: {identifier}")
+            else:
+                stats['pdf_failed'] += 1
+                logger.warning(f"✗ Failed to attach PDF for {identifier_type}: {identifier}")
+            
+            # Update status every 10 items
+            if stats['scanned'] % 10 == 0:
+                try:
+                    await status_msg.edit(
+                        content=f"🔍 Scanning... {stats['scanned']}/{len(items)} items processed\n"
+                                f"📄 PDFs attached: {stats['pdf_attached']}"
+                    )
+                except:
+                    pass  # Ignore edit failures
+        
+        # Send final report
+        report = (
+            f"✅ **PDF Attachment Scan Complete**\n\n"
+            f"📊 **Statistics:**\n"
+            f"• Items scanned: {stats['scanned']}\n"
+            f"• Already have PDFs: {stats['has_attachment']}\n"
+            f"• No identifier found: {stats['no_identifier']}\n"
+            f"• PDF not available: {stats['pdf_unavailable']}\n"
+            f"• ✅ PDFs attached: {stats['pdf_attached']}\n"
+            f"• ❌ Attachment failed: {stats['pdf_failed']}\n"
+        )
+        
+        if stats['pdf_attached'] > 0:
+            report += f"\n🎉 Successfully attached {stats['pdf_attached']} PDF(s)!"
+        elif stats['has_attachment'] == stats['scanned']:
+            report += f"\n✨ All scanned items already have PDFs!"
+        else:
+            report += f"\n💡 Tip: PDFs are only available for open access papers (arXiv, bioRxiv, some DOIs)"
+        
+        await status_msg.edit(content=report)
+        logger.info(f"PDF attachment scan complete: {stats}")
+        
+    except Exception as e:
+        logger.error(f"Error in attach_pdfs command: {e}")
+        await interaction.followup.send(f"❌ Error during PDF attachment: {str(e)}")
 
 
 # ============================================================================
