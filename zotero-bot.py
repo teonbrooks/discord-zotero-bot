@@ -6,6 +6,12 @@ import asyncio
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 
+# Point SSL at certifi's CA bundle before any network library is initialised.
+# Required when using Python builds (e.g. fbcode) that don't ship system certs.
+import certifi
+os.environ.setdefault('SSL_CERT_FILE', certifi.where())
+os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -133,139 +139,133 @@ def get_pdf_url(identifier_type: str, identifier: str, metadata: Optional[Dict] 
         return None
 
 
+def _attach_linked_url(item_key: str, pdf_url: str, filename: str) -> bool:
+    """Create a linked_url attachment pointing at pdf_url. Returns True on success."""
+    url_template = zot.item_template('attachment', 'linked_url')
+    url_template['title'] = filename
+    url_template['url'] = pdf_url
+    url_template['contentType'] = 'application/pdf'
+
+    url_created = zot.create_items([url_template], parentid=item_key)
+
+    if url_created.get('success'):
+        logger.info(f"✓ PDF link attached for item {item_key}")
+        return True
+    else:
+        logger.error(f"linked_url creation failed for item {item_key}: {url_created.get('failed', {})}")
+        return False
+
+
+def _delete_attachment_item(attachment_key: str) -> None:
+    """Best-effort deletion of an orphaned attachment item."""
+    try:
+        zot.delete_item(zot.item(attachment_key))
+        logger.debug(f"Deleted orphaned attachment item {attachment_key}")
+    except Exception as e:
+        logger.warning(f"Could not delete orphaned attachment {attachment_key}: {e}")
+
+
 async def download_and_attach_pdf(item_key: str, pdf_url: str, filename: str) -> bool:
     """
-    Download PDF from URL and attach it to a Zotero item.
-    Returns True if successful, False otherwise.
+    Attach a PDF to a Zotero item.
+
+    Attempts to store a full copy (imported_file). Falls back to a linked_url
+    attachment in any of these situations:
+      - Library does not support file storage (e.g. Public Open group → 403)
+      - PDF download fails (non-200, timeout)
+      - Downloaded content is not a valid PDF
     """
     import tempfile
+    import shutil
     import os as os_module
-    
-    tmp_path = None
+
+    tmp_dir = None
     try:
-        logger.info(f"Attempting to download PDF from: {pdf_url}")
-        
-        # Download PDF with timeout
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            response = await client.get(pdf_url)
-            
-            if response.status_code != 200:
-                logger.warning(f"Failed to download PDF: HTTP {response.status_code}")
-                return False
-            
-            pdf_content = response.content
-            
-            # Check if content looks like a PDF
-            if not pdf_content.startswith(b'%PDF'):
-                logger.warning(f"Downloaded content doesn't appear to be a PDF (size: {len(pdf_content)} bytes)")
-                return False
-            
-            logger.info(f"Successfully downloaded PDF ({len(pdf_content)} bytes)")
-            
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', mode='wb') as tmp_file:
-                tmp_file.write(pdf_content)
-                tmp_path = tmp_file.name
-            
-            logger.info(f"Saved PDF to temporary file: {tmp_path}")
-            
-            # Method 1: Try attachment_simple with parentid
+        # ── Step 1: probe whether the library accepts file uploads ──────────
+        # Create the attachment metadata item BEFORE downloading so we don't
+        # waste bandwidth when the library has no file-storage support.
+        file_template = zot.item_template('attachment', 'imported_file')
+        file_template['title'] = filename
+        file_template['filename'] = filename   # basename; resolved via basedir
+        file_template['contentType'] = 'application/pdf'
+        file_template.pop('md5', None)
+        file_template.pop('mtime', None)
+
+        created = zot.create_items([file_template], parentid=item_key)
+
+        if created.get('success'):
+            # ── Step 2a: library supports file storage — download and upload ─
+            attachment_key = created['success']['0']
+
             try:
-                logger.info(f"Attempting attachment using attachment_simple (parentid={item_key})")
-                result = zot.attachment_simple([tmp_path], parentid=item_key)
-                logger.info(f"attachment_simple result: {result}")
-                
-                # Check if the result indicates success or failure
-                # Result format: {'success': [...], 'failure': [...], 'unchanged': [...]}
-                method1_success = False
-                
-                if isinstance(result, dict):
-                    success_list = result.get('success', [])
-                    failure_list = result.get('failure', [])
-                    
-                    logger.info(f"Success items: {len(success_list)}, Failure items: {len(failure_list)}")
-                    
-                    if failure_list:
-                        logger.warning(f"attachment_simple reported failures: {failure_list}")
-                        raise Exception(f"attachment_simple failed: {failure_list[0] if failure_list else 'unknown error'}")
-                    
-                    if not success_list:
-                        logger.warning(f"attachment_simple returned empty success list")
-                        raise Exception("attachment_simple returned no successful attachments")
-                    
-                    # Success list has items - verify by checking children
-                    logger.info(f"attachment_simple reported success, verifying...")
-                
-                # Verify the attachment was actually created
-                try:
-                    children = zot.children(item_key)
-                    has_pdf = any(
-                        child['data'].get('itemType') == 'attachment' 
-                        for child in children
-                    )
-                    if has_pdf:
-                        logger.info(f"✓ Verified: PDF attachment exists for item {item_key}")
-                        return True
-                    else:
-                        logger.warning(f"attachment_simple reported success but no attachment found in children")
-                        raise Exception("Attachment not found after successful API call")
-                except Exception as verify_error:
-                    logger.warning(f"Verification failed: {verify_error}")
-                    raise
-                
-            except Exception as e1:
-                logger.warning(f"Method 1 (attachment_simple) failed: {e1}")
-                
-                # Method 2: Try creating attachment item manually
-                try:
-                    logger.info(f"Attempting manual attachment creation for item {item_key}")
-                    
-                    # Create attachment template
-                    template = zot.item_template('attachment', 'imported_file')
-                    template['parentItem'] = item_key
-                    template['title'] = filename
-                    template['contentType'] = 'application/pdf'
-                    template['filename'] = filename
-                    
-                    # Create the attachment item first
-                    created = zot.create_items([template])
-                    logger.info(f"Created attachment item: {created}")
-                    breakpoint()
-                    
-                    if created and 'successful' in created and created['successful']:
-                        attachment_key = created['successful']['0']['key']
-                        logger.info(f"Attachment item created with key: {attachment_key}")
-                        
-                        # Now upload the file to the attachment
-                        with open(tmp_path, 'rb') as f:
-                            result = zot.upload_attachment(attachment_key, f)
-                        
-                        logger.info(f"✓ Successfully uploaded PDF using manual method: {result}")
-                        return True
-                    else:
-                        logger.error(f"Failed to create attachment item: {created}")
-                        return False
-                        
-                except Exception as e2:
-                    logger.error(f"Manual attachment creation also failed: {e2}")
-                    logger.exception(e2)
-                    return False
-    
-    except httpx.TimeoutException:
-        logger.warning(f"Timeout while downloading PDF from {pdf_url}")
-        return False
+                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                    response = await client.get(pdf_url)
+            except httpx.TimeoutException:
+                logger.warning(f"Timeout downloading PDF from {pdf_url}. Falling back to linked_url.")
+                _delete_attachment_item(attachment_key)
+                return _attach_linked_url(item_key, pdf_url, filename)
+
+            if response.status_code != 200:
+                logger.warning(
+                    f"PDF unavailable (HTTP {response.status_code}). "
+                    f"Falling back to linked_url."
+                )
+                _delete_attachment_item(attachment_key)
+                return _attach_linked_url(item_key, pdf_url, filename)
+
+            pdf_content = response.content
+            if not pdf_content.startswith(b'%PDF'):
+                logger.warning(
+                    f"Content is not a valid PDF ({len(pdf_content)} bytes). "
+                    f"Falling back to linked_url."
+                )
+                _delete_attachment_item(attachment_key)
+                return _attach_linked_url(item_key, pdf_url, filename)
+
+            tmp_dir = tempfile.mkdtemp()
+            tmp_path = os_module.path.join(tmp_dir, filename)
+            with open(tmp_path, 'wb') as f:
+                f.write(pdf_content)
+
+            upload_template = dict(file_template)
+            upload_template['key'] = attachment_key
+            result = zot.upload_attachments([upload_template], basedir=tmp_dir)
+
+            if result.get('success') or result.get('unchanged'):
+                logger.info(f"✓ PDF stored and attached for item {item_key}")
+                return True
+            else:
+                logger.warning(f"File upload failed for item {item_key}: {result.get('failure', [])}")
+                return False
+
+        else:
+            failed = created.get('failed', {})
+            error_code = failed.get('0', {}).get('code')
+
+            if error_code == 403:
+                # ── Step 2b: no file storage (Public Open group or quota) ────
+                logger.info(
+                    f"Library does not support file storage. "
+                    f"Falling back to linked_url attachment."
+                )
+                return _attach_linked_url(item_key, pdf_url, filename)
+            else:
+                logger.error(
+                    f"Zotero rejected attachment creation (code {error_code}). "
+                    f"Details: {failed}"
+                )
+                return False
+
     except Exception as e:
-        logger.error(f"Error downloading and attaching PDF: {e}")
+        logger.error(f"Error attaching PDF: {e}")
         logger.exception(e)
         return False
     finally:
-        # Clean up temporary file
-        if tmp_path:
+        if tmp_dir:
             try:
-                os_module.unlink(tmp_path)
-                logger.debug(f"Cleaned up temporary file: {tmp_path}")
+                shutil.rmtree(tmp_dir)
             except Exception as cleanup_error:
-                logger.warning(f"Failed to clean up {tmp_path}: {cleanup_error}")
+                logger.warning(f"Failed to clean up temp dir {tmp_dir}: {cleanup_error}")
 
 
 # ============================================================================
