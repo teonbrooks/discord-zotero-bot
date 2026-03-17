@@ -1391,47 +1391,53 @@ async def on_message(message: discord.Message):
 
 @bot.tree.command(name="scan_papers", description="Scan papers category channels for article links")
 @app_commands.describe(
-    limit="Maximum number of messages to scan per channel (default: 100)"
+    limit="Maximum number of messages to scan per channel (default from config, ignored when all_messages=True)",
+    all_messages="Scan every message in each channel with no upper limit (default: False)"
 )
-async def scan_papers(interaction: discord.Interaction, limit: int = None):
+async def scan_papers(interaction: discord.Interaction, limit: int = None, all_messages: bool = False):
     """Scan all channels in papers category and add papers to Zotero."""
     await interaction.response.defer(thinking=True)
-    
-    if limit is None:
-        limit = MAX_MESSAGES_PER_CHANNEL
-    
-    # Validate limit
-    if limit < 1 or limit > 1000:
-        await interaction.followup.send("❌ Limit must be between 1 and 1000")
-        return
-    
+
+    # Resolve effective history limit: None tells discord.py to fetch everything
+    if all_messages:
+        history_limit = None
+        limit_display = "all"
+    else:
+        if limit is None:
+            limit = MAX_MESSAGES_PER_CHANNEL
+        if limit < 1 or limit > 10000:
+            await interaction.followup.send("❌ Limit must be between 1 and 10000")
+            return
+        history_limit = limit
+        limit_display = str(limit)
+
     try:
         guild = interaction.guild
         if not guild:
             await interaction.followup.send("❌ This command must be used in a server")
             return
-        
+
         # Find papers category
         papers_category = None
         for category in guild.categories:
             if category.name.lower() == PAPERS_CATEGORY_NAME.lower():
                 papers_category = category
                 break
-        
+
         if not papers_category:
             await interaction.followup.send(f"❌ Could not find '{PAPERS_CATEGORY_NAME}' category")
             return
-        
+
         # Get all text channels in the category
         channels = [ch for ch in papers_category.channels if isinstance(ch, discord.TextChannel)]
-        
+
         if not channels:
             await interaction.followup.send(f"❌ No text channels found in '{PAPERS_CATEGORY_NAME}' category")
             return
-        
+
         await interaction.followup.send(
             f"🔍 Starting scan of {len(channels)} channel(s) in '{PAPERS_CATEGORY_NAME}' category...\n"
-            f"Scanning up to {limit} messages per channel."
+            f"Scanning {'all' if all_messages else f'up to {limit_display}'} messages per channel."
         )
         
         # Process each channel
@@ -1441,10 +1447,9 @@ async def scan_papers(interaction: discord.Interaction, limit: int = None):
             channel_stats = {'added': 0, 'duplicates': 0, 'errors': 0, 'messages': 0}
             
             try:
-                logger.info(f"Scanning channel: {channel.name}")
-                
-                # Fetch messages
-                async for message in channel.history(limit=limit):
+                logger.info(f"Scanning channel: {channel.name} (limit={history_limit})")
+
+                async for message in channel.history(limit=history_limit):
                     if message.author.id == bot.user.id:
                         continue
                     
