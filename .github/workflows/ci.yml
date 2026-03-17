@@ -42,6 +42,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Verify module imports
+        env:
+          DISCORD_TOKEN: ci-placeholder
+          ZOTERO_TOKEN: ci-placeholder
+          ZOTERO_GROUP_ID: ci-placeholder
         run: |
           uv run python -c "import config; import extractors; import metadata; import library; print('All modules imported successfully')"
 

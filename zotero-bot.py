@@ -7,8 +7,9 @@ from typing import Dict, Set
 # Point SSL at certifi's CA bundle before any network library is initialised.
 # Required when using Python builds (e.g. fbcode) that don't ship system certs.
 import certifi
-os.environ.setdefault('SSL_CERT_FILE', certifi.where())
-os.environ.setdefault('REQUESTS_CA_BUNDLE', certifi.where())
+
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
 import discord
 from discord.ext import commands
@@ -27,10 +28,7 @@ from extractors import extract_urls_from_message
 from library import process_link, get_pdf_url, download_and_attach_pdf, zot
 
 # Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Initialize Discord bot
@@ -44,6 +42,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # ============================================================================
 # Discord Helper Functions
 # ============================================================================
+
 
 def is_in_papers_category(channel: discord.TextChannel) -> bool:
     """Check if channel is in the papers category."""
@@ -61,14 +60,14 @@ async def process_message_for_papers(message: discord.Message) -> Dict[str, int]
     Process a message for paper links and add them to Zotero.
     Returns statistics: {'added': count, 'duplicates': count, 'errors': count}
     """
-    stats = {'added': 0, 'duplicates': 0, 'errors': 0}
+    stats = {"added": 0, "duplicates": 0, "errors": 0}
 
     urls = extract_urls_from_message(message.content)
 
     if not urls:
         return stats
 
-    channel_name = message.channel.name if hasattr(message.channel, 'name') else None
+    channel_name = message.channel.name if hasattr(message.channel, "name") else None
 
     processed_urls: Set[str] = set()
 
@@ -81,23 +80,23 @@ async def process_message_for_papers(message: discord.Message) -> Dict[str, int]
             was_added, is_duplicate = await process_link(url, channel_name=channel_name)
 
             if was_added:
-                stats['added'] += 1
+                stats["added"] += 1
                 try:
                     await message.add_reaction(SUCCESS_EMOJI)
                 except discord.errors.Forbidden:
                     logger.warning(f"Cannot add reaction to message {message.id}")
             elif is_duplicate:
-                stats['duplicates'] += 1
+                stats["duplicates"] += 1
                 try:
                     await message.add_reaction(DUPLICATE_EMOJI)
                 except discord.errors.Forbidden:
                     logger.warning(f"Cannot add reaction to message {message.id}")
             else:
-                stats['errors'] += 1
+                stats["errors"] += 1
 
         except Exception as e:
             logger.error(f"Error processing URL {url}: {e}")
-            stats['errors'] += 1
+            stats["errors"] += 1
 
     return stats
 
@@ -105,6 +104,7 @@ async def process_message_for_papers(message: discord.Message) -> Dict[str, int]
 # ============================================================================
 # Discord Bot Events
 # ============================================================================
+
 
 @bot.event
 async def on_ready():
@@ -126,11 +126,11 @@ async def on_message(message: discord.Message):
 
     stats = await process_message_for_papers(message)
 
-    if stats['added'] > 0:
+    if stats["added"] > 0:
         logger.info(f"Added {stats['added']} paper(s) from message {message.id}")
-    if stats['duplicates'] > 0:
+    if stats["duplicates"] > 0:
         logger.info(f"Found {stats['duplicates']} duplicate(s) in message {message.id}")
-    if stats['errors'] > 0:
+    if stats["errors"] > 0:
         logger.warning(f"Had {stats['errors']} error(s) processing message {message.id}")
 
     await bot.process_commands(message)
@@ -140,10 +140,11 @@ async def on_message(message: discord.Message):
 # Discord Bot Commands
 # ============================================================================
 
+
 @bot.tree.command(name="scan_papers", description="Scan papers category channels for article links")
 @app_commands.describe(
     limit="Maximum number of messages to scan per channel (default from config, ignored when all_messages=True)",
-    all_messages="Scan every message in each channel with no upper limit (default: False)"
+    all_messages="Scan every message in each channel with no upper limit (default: False)",
 )
 async def scan_papers(interaction: discord.Interaction, limit: int = None, all_messages: bool = False):
     """Scan all channels in papers category and add papers to Zotero."""
@@ -189,10 +190,10 @@ async def scan_papers(interaction: discord.Interaction, limit: int = None, all_m
             f"Scanning {'all' if all_messages else f'up to {limit_display}'} messages per channel."
         )
 
-        total_stats = {'added': 0, 'duplicates': 0, 'errors': 0, 'messages': 0}
+        total_stats = {"added": 0, "duplicates": 0, "errors": 0, "messages": 0}
 
         for channel in channels:
-            channel_stats = {'added': 0, 'duplicates': 0, 'errors': 0, 'messages': 0}
+            channel_stats = {"added": 0, "duplicates": 0, "errors": 0, "messages": 0}
 
             try:
                 logger.info(f"Scanning channel: {channel.name} (limit={history_limit})")
@@ -201,19 +202,19 @@ async def scan_papers(interaction: discord.Interaction, limit: int = None, all_m
                     if message.author.id == bot.user.id:
                         continue
 
-                    channel_stats['messages'] += 1
+                    channel_stats["messages"] += 1
                     stats = await process_message_for_papers(message)
 
-                    channel_stats['added'] += stats['added']
-                    channel_stats['duplicates'] += stats['duplicates']
-                    channel_stats['errors'] += stats['errors']
+                    channel_stats["added"] += stats["added"]
+                    channel_stats["duplicates"] += stats["duplicates"]
+                    channel_stats["errors"] += stats["errors"]
 
                     await asyncio.sleep(0.1)
 
-                total_stats['added'] += channel_stats['added']
-                total_stats['duplicates'] += channel_stats['duplicates']
-                total_stats['errors'] += channel_stats['errors']
-                total_stats['messages'] += channel_stats['messages']
+                total_stats["added"] += channel_stats["added"]
+                total_stats["duplicates"] += channel_stats["duplicates"]
+                total_stats["errors"] += channel_stats["errors"]
+                total_stats["messages"] += channel_stats["messages"]
 
                 logger.info(
                     f"Channel {channel.name}: "
@@ -271,9 +272,7 @@ async def zotero_stats(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="attach_pdfs", description="Scan Zotero library and attach PDFs to items missing them")
-@app_commands.describe(
-    limit="Maximum number of items to process (default: 50, max: 200)"
-)
+@app_commands.describe(limit="Maximum number of items to process (default: 50, max: 200)")
 async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
     """Scan existing Zotero items and attach PDFs where available."""
     await interaction.response.defer(thinking=True)
@@ -289,41 +288,40 @@ async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
         logger.info(f"Starting PDF attachment scan (limit: {limit})")
 
         status_msg = await interaction.followup.send(
-            f"🔍 Scanning Zotero library for items without PDFs...\n"
-            f"Checking up to {limit} items..."
+            f"🔍 Scanning Zotero library for items without PDFs...\nChecking up to {limit} items..."
         )
 
         items = zot.top(limit=limit)
         logger.info(f"Fetched {len(items)} items from Zotero")
 
         stats = {
-            'scanned': 0,
-            'has_attachment': 0,
-            'no_identifier': 0,
-            'pdf_attached': 0,
-            'pdf_failed': 0,
-            'pdf_unavailable': 0
+            "scanned": 0,
+            "has_attachment": 0,
+            "no_identifier": 0,
+            "pdf_attached": 0,
+            "pdf_failed": 0,
+            "pdf_unavailable": 0,
         }
 
         for item in items:
-            stats['scanned'] += 1
+            stats["scanned"] += 1
 
-            if item['data'].get('itemType') in ['attachment', 'note']:
+            if item["data"].get("itemType") in ["attachment", "note"]:
                 continue
 
-            item_key = item['key']
-            item_data = item['data']
+            item_key = item["key"]
+            item_data = item["data"]
 
             try:
                 children = zot.children(item_key)
                 has_pdf = any(
-                    child['data'].get('itemType') == 'attachment' and
-                    child['data'].get('contentType') == 'application/pdf'
+                    child["data"].get("itemType") == "attachment"
+                    and child["data"].get("contentType") == "application/pdf"
                     for child in children
                 )
 
                 if has_pdf:
-                    stats['has_attachment'] += 1
+                    stats["has_attachment"] += 1
                     logger.debug(f"Item {item_key} already has PDF attachment")
                     continue
             except Exception as e:
@@ -334,46 +332,46 @@ async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
             identifier = None
             metadata = None
 
-            if 'DOI' in item_data and item_data['DOI']:
-                doi = item_data['DOI']
+            if "DOI" in item_data and item_data["DOI"]:
+                doi = item_data["DOI"]
 
-                if '10.48550/arXiv.' in doi:
-                    identifier_type = 'arxiv'
-                    identifier = doi.split('10.48550/arXiv.')[1]
-                elif '10.1101/' in doi:
-                    identifier_type = 'biorxiv'
+                if "10.48550/arXiv." in doi:
+                    identifier_type = "arxiv"
+                    identifier = doi.split("10.48550/arXiv.")[1]
+                elif "10.1101/" in doi:
+                    identifier_type = "biorxiv"
                     identifier = doi
-                    metadata = {'url': item_data.get('url', '')}
+                    metadata = {"url": item_data.get("url", "")}
                 else:
-                    identifier_type = 'doi'
+                    identifier_type = "doi"
                     identifier = doi
 
-            if not identifier and item_data.get('repository') == 'arXiv':
-                if 'archiveID' in item_data:
-                    identifier_type = 'arxiv'
-                    identifier = item_data['archiveID']
-                elif 'url' in item_data:
-                    url = item_data['url']
-                    arxiv_match = re.search(r'arxiv\.org/(?:abs|pdf)/(\d+\.\d+)', url)
+            if not identifier and item_data.get("repository") == "arXiv":
+                if "archiveID" in item_data:
+                    identifier_type = "arxiv"
+                    identifier = item_data["archiveID"]
+                elif "url" in item_data:
+                    url = item_data["url"]
+                    arxiv_match = re.search(r"arxiv\.org/(?:abs|pdf)/(\d+\.\d+)", url)
                     if arxiv_match:
-                        identifier_type = 'arxiv'
+                        identifier_type = "arxiv"
                         identifier = arxiv_match.group(1)
 
-            if not identifier and item_data.get('repository') == 'bioRxiv':
-                if 'archiveID' in item_data:
-                    identifier_type = 'biorxiv'
-                    identifier = item_data['archiveID']
-                    metadata = {'url': item_data.get('url', '')}
+            if not identifier and item_data.get("repository") == "bioRxiv":
+                if "archiveID" in item_data:
+                    identifier_type = "biorxiv"
+                    identifier = item_data["archiveID"]
+                    metadata = {"url": item_data.get("url", "")}
 
             if not identifier_type or not identifier:
-                stats['no_identifier'] += 1
+                stats["no_identifier"] += 1
                 logger.debug(f"No identifier found for item {item_key}")
                 continue
 
             pdf_url = get_pdf_url(identifier_type, identifier, metadata)
 
             if not pdf_url:
-                stats['pdf_unavailable'] += 1
+                stats["pdf_unavailable"] += 1
                 logger.debug(f"No PDF URL available for {identifier_type}: {identifier}")
                 continue
 
@@ -383,17 +381,17 @@ async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
             success = await download_and_attach_pdf(item_key, pdf_url, filename)
 
             if success:
-                stats['pdf_attached'] += 1
+                stats["pdf_attached"] += 1
                 logger.info(f"✓ Attached PDF for {identifier_type}: {identifier}")
             else:
-                stats['pdf_failed'] += 1
+                stats["pdf_failed"] += 1
                 logger.warning(f"✗ Failed to attach PDF for {identifier_type}: {identifier}")
 
-            if stats['scanned'] % 10 == 0:
+            if stats["scanned"] % 10 == 0:
                 try:
                     await status_msg.edit(
                         content=f"🔍 Scanning... {stats['scanned']}/{len(items)} items processed\n"
-                                f"📄 PDFs attached: {stats['pdf_attached']}"
+                        f"📄 PDFs attached: {stats['pdf_attached']}"
                     )
                 except Exception:
                     pass
@@ -409,9 +407,9 @@ async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
             f"• ❌ Attachment failed: {stats['pdf_failed']}\n"
         )
 
-        if stats['pdf_attached'] > 0:
+        if stats["pdf_attached"] > 0:
             report += f"\n🎉 Successfully attached {stats['pdf_attached']} PDF(s)!"
-        elif stats['has_attachment'] == stats['scanned']:
+        elif stats["has_attachment"] == stats["scanned"]:
             report += f"\n✨ All scanned items already have PDFs!"
         else:
             report += f"\n💡 Tip: PDFs are only available for open access papers (arXiv, bioRxiv, some DOIs)"
