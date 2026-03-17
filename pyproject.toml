@@ -1,9 +1,10 @@
 [project]
-name = "zotero-bot"
+name = "discord-zotero-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "A Discord bot that monitors paper-sharing channels and saves articles to a Zotero group library"
 readme = "README.md"
 requires-python = ">=3.12"
+license = { file = "LICENSE" }
 dependencies = [
     "certifi>=2024.0.0",
     "discord-py>=2.6.4",
@@ -15,4 +16,17 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipython>=9.9.0",
+    "pytest>=8.0.0",
+    "ruff>=0.9.0",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

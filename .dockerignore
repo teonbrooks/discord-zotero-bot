@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+
+# Virtual environments
+.venv/
+
+# Environment secrets — injected at runtime, never baked into the image
+.env
+
+# Development and tooling
+tests/
+docs/
+src/
+.github/
+.git/
+.gitignore
+.python-version
+
+# Editor / OS
+.cursor/
+.DS_Store
+*.swp

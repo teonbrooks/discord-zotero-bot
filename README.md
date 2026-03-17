@@ -1,4 +1,4 @@
-# Zotero Discord Bot
+# discord-zotero-bot
 
 A Discord bot that automatically monitors channels in a "papers" category and adds linked articles to a Zotero group library.
 
