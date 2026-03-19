@@ -1,19 +1,19 @@
-import re
 import logging
-import tempfile
-import shutil
 import os
-from typing import Dict, List, Set, Tuple, Optional
+import re
+import shutil
+import tempfile
+from typing import Dict, List, Optional, Set, Tuple
 
 import httpx
 from pyzotero import zotero
 
-from config import ZOTERO_TOKEN, ZOTERO_GROUP_ID
-from extractors import strip_html_tags, categorize_link
+from config import ZOTERO_GROUP_ID, ZOTERO_TOKEN
+from extractors import categorize_link, strip_html_tags
 from metadata import (
-    fetch_crossref_metadata,
     fetch_arxiv_metadata,
     fetch_biorxiv_metadata,
+    fetch_crossref_metadata,
     fetch_pubmed_metadata,
     fetch_webpage_metadata,
 )
@@ -157,7 +157,7 @@ async def download_and_attach_pdf(item_key: str, pdf_url: str, filename: str) ->
             error_code = failed.get("0", {}).get("code")
 
             if error_code == 403:
-                logger.info(f"Library does not support file storage. Falling back to linked_url attachment.")
+                logger.info("Library does not support file storage. Falling back to linked_url attachment.")
                 return _attach_linked_url(item_key, pdf_url, filename)
             else:
                 logger.error(f"Zotero rejected attachment creation (code {error_code}). Details: {failed}")
@@ -430,7 +430,7 @@ async def add_to_zotero_by_identifier(
                         item_key = items["successful"]["0"]["key"]
                         pdf_url = get_pdf_url("doi", identifier, metadata)
                         if pdf_url:
-                            logger.info(f"Found PDF URL for DOI, attempting to attach")
+                            logger.info("Found PDF URL for DOI, attempting to attach")
                             await download_and_attach_pdf(item_key, pdf_url, f"{identifier}.pdf")
                         else:
                             logger.info(f"No open access PDF available for DOI: {identifier}")
@@ -670,7 +670,7 @@ async def add_to_zotero_by_url(url: str, tags: Optional[List[str]] = None) -> Tu
         template["tags"] = [{"tag": tag} for tag in tags]
 
         try:
-            items = zot.create_items([template])
+            zot.create_items([template])
             logger.info(f"Added item from URL with metadata: {url}")
             return (True, "success")
         except Exception as e:

@@ -1,7 +1,7 @@
+import asyncio
+import logging
 import os
 import re
-import logging
-import asyncio
 from typing import Dict, Set
 
 # Point SSL at certifi's CA bundle before any network library is initialised.
@@ -12,20 +12,19 @@ os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
 from config import (
     DISCORD_TOKEN,
-    ZOTERO_GROUP_ID,
-    PAPERS_CATEGORY_NAME,
-    MAX_MESSAGES_PER_CHANNEL,
-    SUCCESS_EMOJI,
     DUPLICATE_EMOJI,
-    ERROR_EMOJI,
+    MAX_MESSAGES_PER_CHANNEL,
+    PAPERS_CATEGORY_NAME,
+    SUCCESS_EMOJI,
+    ZOTERO_GROUP_ID,
 )
 from extractors import extract_urls_from_message
-from library import process_link, get_pdf_url, download_and_attach_pdf, zot
+from library import download_and_attach_pdf, get_pdf_url, process_link, zot
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -410,9 +409,9 @@ async def attach_pdfs(interaction: discord.Interaction, limit: int = 50):
         if stats["pdf_attached"] > 0:
             report += f"\n🎉 Successfully attached {stats['pdf_attached']} PDF(s)!"
         elif stats["has_attachment"] == stats["scanned"]:
-            report += f"\n✨ All scanned items already have PDFs!"
+            report += "\n✨ All scanned items already have PDFs!"
         else:
-            report += f"\n💡 Tip: PDFs are only available for open access papers (arXiv, bioRxiv, some DOIs)"
+            report += "\n💡 Tip: PDFs are only available for open access papers (arXiv, bioRxiv, some DOIs)"
 
         await status_msg.edit(content=report)
         logger.info(f"PDF attachment scan complete: {stats}")
